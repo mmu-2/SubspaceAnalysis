@@ -7,6 +7,9 @@ from PIL import Image
 import numpy as np
 import argparse
 
+import torch
+from torchvision.transforms import v2
+
 
 certainties_mapping = {
     1: 'not visible',
@@ -194,6 +197,12 @@ class CUB_Image:
     def parts(self):
         return [self.back, self.beak, self.belly, self.breast, self.crown, self.forehead, self.left_eye, self.left_leg, self.left_wing, self.nape, self.right_eye, self.right_leg, self.right_wing, self.tail, self.throat]
 
+    def image_as_pil(self):
+        return Image.open(self.img_path) #Images are loaded in RGB mode
+
+    def image_as_np(self):
+        return np.array(Image.open(self.img_path))
+
     def show_bbox(self)-> Image.Image:
         x,y,width,height = self.bbox
         np_img = np.array(Image.open(self.img_path))
@@ -267,6 +276,8 @@ class CUB:
         image_id_and_attr_id_2_certainty_id = all_mappings[8]
         part_id_2_part_locs = all_mappings[9]
 
+        self.classes = list(class_2_name.keys())
+
 
         for class_id, attributes in class_id_2_attr_makeup.items():
             self.attributes_gt[class_id] = [attr/100 for attr in attributes]
@@ -298,7 +309,6 @@ class CUB:
             else:
                 self.CUB_val_set.append(CUB_Image(image_id, class_name, path, seg_path, attributes, bbox, label, parts))
 
-
     def __getitem__(self, idx):
         return self.CUB_images[idx]
 
@@ -307,7 +317,7 @@ class CUB:
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Process CUB_200_2011 dataset.")
-    parser.add_argument('--data_dir', type=str, default="D:\\Users\\admm6\\Desktop\\Subspace Research\\CUB_200_2011",
+    parser.add_argument('--data_dir', type=str, default="./CUB_200_2011/",
                         help='Directory where the CUB_200_2011 dataset is located.')
     parser.add_argument('--certainty_threshold', type=int, default=4,
                         help='Threshold for certainty levels.')
@@ -324,9 +334,81 @@ if __name__ == '__main__':
     print('len(cub.CUB_train_set)',len(cub.CUB_train_set))
     print('len(cub.CUB_val_set)',len(cub.CUB_val_set))
 
-    sample.show_bbox().show()
-    sample.show_masked_image().show()
-    sample.show_mask_on_image().show()
-    sample.show_parts().show()
-    for attribute_id, attribute in sample.attributes.items():
-        print(attribute)
+    # sample.show_bbox().show()
+    # sample.show_masked_image().show()
+    # sample.show_mask_on_image().show()
+    # sample.show_parts().show()
+    # for attribute_id, attribute in sample.attributes.items():
+    #     print(attribute)
+
+    transform = v2.Compose([
+        v2.RandomResizedCrop(224),
+        # totensor is deprecated now (see https://pytorch.org/vision/main/generated/torchvision.transforms.v2.ToTensor.html)
+        v2.ToImage(),
+        v2.ToDtype(torch.float32, scale=True),
+        # v2.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225]), #this is imagenet
+    ])
+
+    # mean = torch.zeros(3)
+    # x_squared = torch.zeros(3)
+    # total_images = len(cub.CUB_train_set + cub.CUB_val_set)
+    # total_pixels = 0
+    # for i,image in enumerate(cub.CUB_train_set + cub.CUB_val_set):
+    #     image_tensor = transform(image.image_as_pil())
+    #     # print(image_tensor.shape)
+    #     mean += image_tensor.sum(axis=(1,2))
+    #     x_squared += (image_tensor * image_tensor).sum(axis=(1,2))
+    #     total_pixels += (image_tensor.shape[1] * image_tensor.shape[2])
+    #     if i % 100 == 0:
+    #         print(f'{i}/{total_images}')
+    # mean /= (total_pixels)
+    # var = x_squared / total_pixels - (mean * mean)
+    # std = var.sqrt()
+
+    # print('Calculated mean:', mean) 
+    # print('Calculated std:', std)
+
+    ##########These 2 were calculated with transform resizerandomcrop(224)
+    # Calculated mean: tensor([0.4830, 0.4907, 0.4233])
+    # Calculated std: tensor([0.2298, 0.2253, 0.2599])
+
+    # Calculated mean: tensor([0.4817, 0.4900, 0.4222])
+    # Calculated std: tensor([0.2300, 0.2256, 0.2604])
+########################
+
+    #This was calculated with the entire data
+    # Calculated mean: tensor([0.4865, 0.5005, 0.4325])
+    # Calculated std: tensor([0.2324, 0.2278, 0.2666])
+
+
+    images = []
+    total_images = len(cub.CUB_train_set + cub.CUB_val_set)
+    for i,image in enumerate(cub.CUB_train_set + cub.CUB_val_set):
+        image_tensor = transform(image.image_as_pil())
+        # if image_tensor.shape != (3, 224, 224):
+        if image_tensor.shape[0] != 3:
+            image_tensor = image_tensor.repeat(3,1,1)
+        images.append(image_tensor)
+
+        if i % 100 == 0:
+            print(f'{i}/{total_images}')
+    stacked = torch.stack(images)
+    print('stacked.shape',stacked.shape)
+    std, mean = torch.std_mean(stacked, axis=(0,2,3))
+
+    print('Programmatic mean:', mean)
+    print('Programmatic std:', std)
+
+    ### Not easy to do this way with original sizes because stack doesn't work with varying sizes.
+
+    #some stochastic calculations with randomresizecrop().
+    # I chose the median and will be using it for preprocessing during classification.
+    # Makes sense to use this one because we'll also be doing randomresizecrop() for the tasks.
+    # Programmatic mean: tensor([0.4825, 0.4904, 0.4227]) #median
+    # Programmatic std: tensor([0.2295, 0.2250, 0.2597])
+
+    # Programmatic mean: tensor([0.4830, 0.4910, 0.4232])
+    # Programmatic std: tensor([0.2301, 0.2254, 0.2601])
+
+    # Programmatic mean: tensor([0.4820, 0.4900, 0.4224])
+    # Programmatic std: tensor([0.2301, 0.2256, 0.2602])

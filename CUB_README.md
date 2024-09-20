@@ -1,6 +1,7 @@
 0. I later found a more informative README with dataset information here: https://drive.google.com/drive/folders/1kFzIqZL_pEBVR7Ca_8IKibfWoeZc3GT1
 
 1. Download dataset and segmentations from here: https://www.vision.caltech.edu/datasets/cub_200_2011/
+2. A separate paper provides the 10 sentence descriptions here: https://github.com/reedscot/cvpr2016?tab=readme-ov-file
 
 2. I currently expect a hierarchy like this:
 ```
@@ -36,6 +37,7 @@ CUB_200_2011
 3.
 ```
 conda create -n "cub_dataset" python==3.7.6
+conda create -n "cub" python==3.12
 conda activate cub_dataset
 ```
 
@@ -45,6 +47,12 @@ conda activate cub_dataset
 pip install pillow
 pip install pandas
 pip install opencv-python
+pip install torch torchvision torchaudio
+pip install wandb
+
+--Segmentation Dependencies--
+pip install pycocotools
+pip install segmentation-models-pytorch
 ```
 
 
@@ -65,3 +73,5 @@ This differs from locs because it combines the MTurk data by finding the median 
 - image_class_labels: maps image id to a class
 - images: image id to image path
 - train_test_split: maps each image id to 1-train;0-test split.
+
+- segmentations: grayscale images with ~4 votes on the segmentation. Most are format 'L' (8-bit grayscale), but some are 'LA' (L with alpha)
