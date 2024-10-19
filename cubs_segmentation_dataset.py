@@ -7,6 +7,7 @@ import argparse
 import torch.nn as nn
 import wandb
 from torchvision.io import read_image, ImageReadMode
+import os
 
 class CUBSegmentationDataset(Dataset):
 
@@ -198,17 +199,24 @@ if __name__ == '__main__':
             "epochs": args.epochs,
         }
     )
-    
+
+    best_acc = 0.0
     for epoch in range(args.epochs):
         print('-' * 10)
         print(f'epoch: {epoch}')
         epoch_running_train_loss = train_one_epoch(model, optimizer, criterion, train_loader, device)
         accuracy, mIoU = evaluate(model, test_loader, device=device)
-        
+    
         wandb.log({
             "epoch": epoch,
             ("train/loss"): epoch_running_train_loss,
             ("val/acc"): accuracy,
             ("val/mIoU"): mIoU,
         })
+
+        # deep copy the model
+        if accuracy > best_acc:
+            best_acc = accuracy
+            os.makedirs(args.output, exist_ok=True)
+            torch.save(model.state_dict(), os.path.join(args.output, 'segmentation_best_model.pth'))
     wandb.finish()

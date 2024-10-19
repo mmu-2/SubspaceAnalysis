@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision.transforms import v2
-from torchvision import models
+from torchvision import models, datasets
 from process_cubs import CUB, CUB_Image
 import argparse
 from PIL import Image
@@ -9,31 +9,6 @@ import os
 import torch.nn as nn
 import wandb
 
-class CUBClassificationDataset(Dataset):
-
-    def __init__(self, cub_images:list[CUB_Image]):
-        self.image_paths = []
-        self.label_ids = []
-        for cub_image in cub_images:
-            self.image_paths.append(cub_image.img_path)
-            self.label_ids.append(cub_image.label - 1) #Note I'm subtracting 1 here because PyTorch wants index from 0.
-        self.transform = v2.Compose([
-            # Random resize crop is standard, but I'm concerned that the birds task is too fine-grained for that.
-            v2.Resize(224),
-            v2.CenterCrop(224),
-            # v2.RandomResizedCrop(224),
-            # v2.RandomHorizontalFlip(),
-            v2.ToImage(),
-            v2.ToDtype(torch.float32, scale=True),
-            # v2.Normalize(mean=[0.4825, 0.4904, 0.4227], std=[0.2295, 0.2250, 0.2597]) #Cubs normalization values I calculated
-            v2.Normalize(mean=[0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225]) #Imagenet values
-        ])
-        
-    def __len__(self):
-        return len(self.image_paths)
-
-    def __getitem__(self, idx):
-        return self.transform(Image.open(self.image_paths[idx])), torch.tensor(self.label_ids[idx])
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Process CUB_200_2011 dataset.")
@@ -53,26 +28,62 @@ if __name__ == '__main__':
     
     args = parse_args()
 
-    cub = CUB(args)
+    # cub = CUB(args)
+    # train_dataset = CUBClassificationDataset(cub.CUB_train_set)
+    # test_dataset = CUBClassificationDataset(cub.CUB_val_set)
+    # train_dataset = datasets.Caltech256('./Caltech256',transform=v2.Compose([
+    #         #For now, do nothing else because other augmentations
+    #         v2.RandomResizedCrop(224),
+    #         v2.RandomHorizontalFlip(),
+    #         v2.ToImage(),
+    #         v2.ToDtype(torch.float32, scale=True),
+    #         # v2.Normalize(mean=[0.4825, 0.4904, 0.4227], std=[0.2295, 0.2250, 0.2597]) #Cubs normalization values I calculated
+    #         v2.Normalize(mean=[0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225]) #Imagenet values
+    #     ]),
+    #     download=True)
 
-    train_dataset = CUBClassificationDataset(cub.CUB_train_set)
-    test_dataset = CUBClassificationDataset(cub.CUB_val_set)
+    transform = v2.Compose([
+            #For now, do nothing else because other augmentations
+            # v2.RandomResizedCrop(224),
+            # v2.RandomHorizontalFlip(),
+            v2.Grayscale(1),
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
+            # v2.Normalize(mean=[0.4825, 0.4904, 0.4227], std=[0.2295, 0.2250, 0.2597]) #Cubs normalization values I calculated
+            # v2.Normalize(mean=[0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225]) #Imagenet values
+            v2.Normalize([0.5], [0.5])
+        ])
+    train_dataset = datasets.FashionMNIST(
+        root="./fashionmnist",
+        train=True,
+        download=True,
+        transform=transform
+    )
+
+    test_dataset = datasets.FashionMNIST(
+        root="./fashionmnist",
+        train=False,
+        download=True,
+        transform=transform
+    )
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V2)
-    num_classes = len(cub.classes)
-    model.fc = nn.Linear(in_features=2048, out_features=num_classes, bias=True)
+    model = models.resnet18(weights=None)
+    # num_classes = len(cub.classes)
+    num_classes = 10
+    model.fc = nn.Linear(in_features=512, out_features=num_classes, bias=True)
+    model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False) #switch to single channel
 
     model = model.to(device)
     criterion = nn.CrossEntropyLoss()
-    W = torch.nn.Linear(224*224*3, args.k, bias=False, device=device) #set bias=False is equivalent to Parameters, but I don't have to initialize
+    W = torch.nn.Linear(28*28*1, args.k, bias=False, device=device) #set bias=False is equivalent to Parameters, but I don't have to initialize
     I = torch.eye(args.k, device=device)
     optimizer = torch.optim.AdamW([
-        {'params': model.parameters(), 'lr': 0.00001},
+        {'params': model.parameters(), 'lr': 0.001},
         {'params': W.parameters(), 'lr': 0.001},
     ])
     
@@ -80,11 +91,11 @@ if __name__ == '__main__':
 
     wandb.init(
         project="image_classification",
-        name="pretrained",
+        name="single-channel-no-projection-1",
         config={
             "learning_rate": args.lr,
-            "architecture": "resnet50",
-            "dataset": "CUB_200_2011",
+            "architecture": "resnet18",
+            "dataset": "FashionMNIST",
             "epochs": args.epochs,
             "K": args.k,
         }
@@ -138,12 +149,14 @@ if __name__ == '__main__':
                     reconstructed = down_projected @ W.weight
                     reshaped_input = reconstructed.reshape(inputs.shape)
                     outputs = model(reshaped_input)
+
+                    # outputs = model(inputs)
                     
                     _, preds = torch.max(outputs, 1)
                     loss = criterion(outputs, labels)
 
-                    # loss = loss + (W.weight @ W.weight.T - I).square().sum()
-                    loss = loss + (W.weight @ W.weight.T - I).abs().sum()
+                    loss = loss + (W.weight @ W.weight.T - I).square().sum()
+                    # loss = loss + (W.weight @ W.weight.T - I).abs().sum()
 
                     # backward + optimize only if in training phase
                     if phase == 'train':
@@ -168,18 +181,21 @@ if __name__ == '__main__':
                     "epoch": epoch,
                     ("train/loss"): epoch_loss,
                     ("train/acc"): epoch_acc,
+                    ("train/W@W.T"): (W.weight @ W.weight.T - I).square().sum(),
                 }, commit=False)
             else:
                 wandb.log({
                     ("val/loss"): epoch_loss,
                     ("val/acc"): epoch_acc,
+                    ("val/W@W.T"): (W.weight @ W.weight.T - I).square().sum(),
                 })
 
             # deep copy the model
             if phase == 'val' and epoch_acc > best_acc:
                 best_acc = epoch_acc
                 os.makedirs(args.output, exist_ok=True)
-                torch.save(model.state_dict(), os.path.join(args.output, 'classification_best_model.pth'))
+                torch.save(model.state_dict(), os.path.join(args.output, 'fmnist_classification_1channel_best_model2.pth'))
+                torch.save(W.state_dict(), os.path.join(args.output, 'fmnist_classification_1channel_best_projection2.pth'))
 
     print(f'Best val Acc: {best_acc:4f}')
     wandb.finish()
