@@ -1,0 +1,11 @@
+gdown
+scipy
+pillow
+pandas
+opencv-python
+torch
+torchvision
+wandb
+# segmentation dependencies
+pip install pycocotools
+pip install segmentation-models-pytorch

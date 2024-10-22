@@ -1,5 +1,6 @@
-
+model_weights/
 CUB_200_2011/
+wandb/
 
 
 # Byte-compiled / optimized / DLL files

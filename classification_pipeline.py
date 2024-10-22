@@ -10,25 +10,23 @@ import torch.nn as nn
 import wandb
 import numpy as np
 
-from cubs_classification_dataset import CUBClassificationDataset
+from cubs_dataset import CUBClassificationDataset
 
 # python classification_pipeline.py --epochs 100 --k 32 --dataset fmnist --model rn18 --projection --experiment test --trial 1
 # python classification_pipeline.py --epochs 10 --k 32 --dataset fmnist --model rn18 --projection --experiment test --trial 1 --no_log
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Process CUB_200_2011 dataset.")
-    parser.add_argument('--data_dir', type=str, default="./CUB_200_2011/",
-                        help='Directory where the CUB_200_2011 dataset is located.')
-    parser.add_argument('--certainty_threshold', type=int, default=4,
-                        help='Threshold for certainty levels in CUBS dataset.')
+    parser = argparse.ArgumentParser(description="Classification dataset pipeline.")
+    parser.add_argument('--data_dir', type=str, default=None, help='Directory where the dataset is located.')
+    parser.add_argument('--certainty_threshold', type=int, default=4, help='Threshold for certainty levels in CUBS dataset.')
     parser.add_argument('--lr', type=float, default=0.001, help="Learning rate")
     parser.add_argument('--batch_size', type=int, default=32, help="Batch size for training.")
     parser.add_argument('--num_workers', type=int, default=4, help="Number of workers for the dataloader.")
     parser.add_argument('--epochs', type=int, default=200, help="Number of training epochs")
     parser.add_argument('--output', type=str, default='./model_weights', help="Output path of model checkpoints")
     parser.add_argument('--k', type=int, help="Dimension of latent space from projection")
-    parser.add_argument('--dataset', type=str, choices=['fmnist', 'cub', 'cifar10'], required=True, help="Dataset being evaluated on.")
-    parser.add_argument('--model', type=str, choices=['rn18', 'rn50'], default='rn18', help="Backbone model being evaluated on.")
+    parser.add_argument('--dataset', type=str, choices=['fmnist', 'cub', 'cifar10', 'celeba', 'caltech101'], required=True, help="Dataset being evaluated on.")
+    parser.add_argument('--model', type=str, choices=['rn18', 'rn34', 'rn50', 'rn101'], default='rn18', help="Backbone model being evaluated on.")
     parser.add_argument('--projection', action='store_true', help="Flag that turns on projection bottleneck W")
     parser.add_argument('--experiment', type=str, default='default', help="Experiment name, use for grouping in wandb")
     parser.add_argument('--trial', type=int, default=1, help="Trial number. Useful for slurm purposes.")
@@ -40,13 +38,23 @@ def get_dataset(args):
     Depending on the dataset selected, we return train_dataset, test_dataset with
     the correct transform preprocessing.
     """
+
+    # Set some default data root directories for datasets.
+    if not args.data_dir:
+        if args.dataset == 'cub': args.data_dir = './CUB_200_2011/'
+        elif args.dataset == 'fmnist': args.data_dir = './fashionmnist/'
+        elif args.dataset == 'cifar10': args.data_dir = './cifar10/'
+        elif args.dataset == 'celeba': args.data_dir = './celeba/'
+        elif args.dataset == 'caltech101': args.data_dir = './caltech101/'
+        else:
+            raise ValueError()
+
     if args.dataset == 'cub':
         # CUBS has their preprocessing happening inside CUBClassificationDataset
         cub = CUB(args)
         train_dataset = CUBClassificationDataset(cub.CUB_train_set)
         test_dataset = CUBClassificationDataset(cub.CUB_val_set)
-
-    if args.dataset == 'fmnist':
+    elif args.dataset == 'fmnist':
         transform = v2.Compose([
             v2.Grayscale(1),
             v2.ToImage(),
@@ -54,21 +62,20 @@ def get_dataset(args):
             v2.Normalize([0.5], [0.5])
         ])
         train_dataset = datasets.FashionMNIST(
-            root='./fashionmnist',
+            root=args.data_dir,
             train=True,
             download=True,
             transform=transform
         )
         test_dataset = datasets.FashionMNIST(
-            root='./fashionmnist',
+            root=args.data_dir,
             train=False,
             download=True,
             transform=transform
         )
-
     # normalization constants coming from 
     # https://github.com/Armour/pytorch-nn-practice/blob/master/utils/meanstd.py
-    if args.dataset == 'cifar10':
+    elif args.dataset == 'cifar10':
         transform = v2.Compose([
             v2.ToImage(),
             v2.ToDtype(torch.float32, scale=True),
@@ -76,25 +83,67 @@ def get_dataset(args):
                          [0.24703223, 0.24348513, 0.26158784]),
         ])
         train_dataset = datasets.CIFAR10(
-            root='./cifar10',
+            root=args.data_dir,
             train=True,
             download=True,
             transform=transform
         )
         test_dataset = datasets.CIFAR10(
-            root='./cifar10',
+            root=args.data_dir,
             train=False,
             download=True,
             transform=transform
         )
-    
-    # if args.dataset == 'celeba':
-    #     transform = v2.Compose([
-    #         v2.ToImage(),
-    #         v2.ToDtype(torch.float32, scale=True),
-    #         v2.Normalize([])
-    #     ])
-    
+
+    elif args.dataset == 'celeba':
+        transform = v2.Compose([
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize([.5, .5, .5], [.5, .5, .5])
+        ])
+
+        train_dataset = datasets.CelebA(
+            root=args.data_dir,
+            split='train', #train, valid, test, all
+            target_type='identity', #attr, identity, bbox, landmarks
+            download=True,
+            transform=transform
+        )
+        test_dataset = datasets.CelebA(
+            root=args.data_dir,
+            split='valid',
+            target_type='identity',
+            download=True,
+            transform=transform
+        )
+        # This fixes the ids to be indexed by 0.
+        # Hacky fix because it assumes knowledge of internal variables but it should work for our purposes.
+        # train_dataset.identity = torch.tensor((train_dataset.identity - 1))
+        train_dataset.identity = (train_dataset.identity - 1).clone().detach()
+        test_dataset.identity = (test_dataset.identity - 1).clone().detach()
+    elif args.dataset == 'caltech101':
+        transform = v2.Compose([
+            v2.Resize(224),
+            v2.CenterCrop(224), #variable sized images
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize([.5, .5, .5], [.5, .5, .5])
+        ])
+        train_dataset = datasets.Caltech101(
+            root=args.data_dir,
+            target_type='category',
+            download=True,
+            transform=transform
+        )
+        test_dataset = datasets.Caltech101(
+            root=args.data_dir,
+            target_type='category',
+            download=True,
+            transform=transform
+        )
+    else:
+        raise ValueError()
+
     return train_dataset, test_dataset
 
 def get_model(args):
@@ -105,10 +154,12 @@ def get_model(args):
 
     if args.model == 'rn18':
         model = models.resnet18(weights=None)
-        fc_in_layers = 512
+    elif args.model == 'rn34':
+        model = models.resnet34(weights=None)
     elif args.model == 'rn50':
         model = models.resnet50(weights=None)
-        fc_in_layers = 2048
+    elif args.model =='rn101':
+        model = models.resnet101(weights=None)
     else:
         raise ValueError()
 
@@ -120,10 +171,14 @@ def get_model(args):
         model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False) #switch to single channel
     elif args.dataset == 'cifar10':
         num_classes = 10
+    elif args.dataset == 'celeba':
+        num_classes = 10177
+    elif args.dataset == 'caltech101':
+        num_classes = 101
     else:
         raise ValueError()
     
-    model.fc = nn.Linear(in_features=fc_in_layers, out_features=num_classes, bias=True)
+    model.fc = nn.Linear(in_features=model.fc.in_features, out_features=num_classes, bias=True)
     return model
 
 if __name__ == '__main__':
@@ -145,14 +200,12 @@ if __name__ == '__main__':
         W = torch.nn.Linear(train_dataset[0][0].flatten().shape[0], args.k, bias=False, device=device)
         I = torch.eye(args.k, device=device)
 
-    optimizer_parameters = [{'params': model.parameters(), 'lr': 0.001}]
+    optimizer_parameters = [{'params': model.parameters(), 'lr': args.lr}]
     if args.projection:
         optimizer_parameters.append(
-            {'params': W.parameters(), 'lr': 0.001}
+            {'params': W.parameters(), 'lr': args.lr}
         )
     optimizer = torch.optim.AdamW(optimizer_parameters)
-
-    best_acc = 0.0
 
     if not args.no_log:
         wandb.init(
@@ -168,10 +221,12 @@ if __name__ == '__main__':
                 "projection": args.projection,
                 "experiment": args.experiment,
                 "trial": args.trial,
-            }
+            },
+            settings=wandb.Settings(_disable_stats=True, _disable_meta=True)
         )
 
-    
+    best_acc = 0.0
+    best_epoch = 0
     dataloaders = {
         'train': train_loader,
         'val': test_loader
@@ -259,12 +314,13 @@ if __name__ == '__main__':
             # deep copy the model
             if phase == 'val' and epoch_acc > best_acc:
                 best_acc = epoch_acc
+                best_epoch = epoch
                 os.makedirs(args.output, exist_ok=True)
                 torch.save(model.state_dict(), os.path.join(args.output, f'{args.experiment}-{args.dataset}-{args.trial}_best_classification_model.pth'))
                 if args.projection:
                     torch.save(W.state_dict(), os.path.join(args.output, f'{args.experiment}-{args.dataset}-{args.trial}_best_classification_projection.pth'))
 
-    print(f'Best val Acc: {best_acc:4f}')
+    print(f'Best val Acc: {best_acc:4f} at epoch {best_epoch}')
 
     # Log some sample images from the training dataset.
     if not args.no_log and args.projection:
