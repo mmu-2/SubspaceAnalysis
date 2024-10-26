@@ -13,12 +13,75 @@ You can run classification code with the following lines:
 ```
 python classification_pipeline.py --epochs 200 \
     --k 1024 \
-    --data_dir ./fashionmnist/ \
+    --data_dir ./data/fashionmnist/ \
     --dataset fmnist \
     --model rn18 \
     --projection \
     --no_log
 ```
+
+You can run segmentation code with the following lines:
+```
+python segmentation_pipeline.py --epochs 200 \
+        --k 512 \
+        --data_dir ./data/CUB_200_2011/ \
+        --dataset cub \
+        --model dlv3rn50 \
+        --projection \
+        --no_log
+```
+
+You can run MAE pretrain code with the following lines:
+```
+python pretrain_mae.py --dataset_task classification \
+        --data_dir ./data/CUB_200_2011/ \
+        --dataset cub \
+        --model mae_vit_base_patch16 \
+        --k 1024 \
+        --projection \
+        --w_weights ./model_weights/ablate-k-cub-10_best_segmentation_projection.pth \
+        --no_log
+```
+
+You can run MAE linear probe code with the following lines:
+```
+python submitit_linprobe.py \
+    --job_dir ${JOB_DIR} \
+    --nodes 4 \
+    --batch_size 512 \
+    --model vit_base_patch16 --cls_token \
+    --finetune ${PRETRAIN_CHKPT} \
+    --epochs 90 \
+    --blr 0.1 \
+    --weight_decay 0.0 \
+    --dist_eval --data_path ${IMAGENET_DIR}
+```
+
+```
+python linprobe_mae.py --dataset_task classification \
+        --data_dir ./data/CUB_200_2011 \
+        --dataset cub \
+        --epochs 90 \
+        --model vit_base_patch16 \
+        --cls_token \
+        --k 1024 \
+        --projection \
+        --w_weights ./model_weights/ablate-k-cub-10_best_segmentation_projection.pth \
+        --finetune /home/msmu/repos/test/model_weights/checkpoint-393.pth \
+        --blr 0.1 \
+        --weight_decay 0.0 \
+        --no_log
+```
+
+
+## MAE-specific setup
+```
+conda create -n "mae" python==3.12
+conda activate mae
+
+```
+
+
 
 ## Datasets
 
@@ -108,3 +171,46 @@ The Pytorch torchvision code is bugged: https://github.com/pytorch/vision/issues
 If you scroll down a bit, you can also see the layout of the code.
 
 If I want to do bounding boxes or masks, I can steal working code from the unmerged fix branch https://github.com/pytorch/vision/pull/7752
+
+
+### CelebAMask-HQ
+Download from https://mmlab.ie.cuhk.edu.hk/projects/CelebA/CelebAMask_HQ.html
+The layout is explained in their README.md
+
+Each numbered mask subfolder has 2k images, so 15 folders = 30k annotations.
+Note that images are 1024x1024 and masks are 512x512, so we'll need to scale them.
+
+Masks: 19 classes
+- _cloth cloth
+- _hair hair
+- _l_brow left brow
+- _l_ear left ear
+- _l_eye left eye
+- _l_lip lower lip
+- _mouth mouth (only inside, doesn't include lips based on the samples I checked)
+- _neck neck
+- _neck_l (necklace)
+- _nose nose
+- _r_brow right brow
+- _r_ear right ear
+- _ear_r (earrings)
+- _r_eye right eye
+- _skin
+- _u_lip upper lip
+- _hat
+- eye_g (eye glasses)
+
+It looks like the naming convention isn't consistent (e.g. 19983_ear_r.png vs 19982_r_ear.png)
+
+Pose: Yaw Pitch Raw. They're labels have a typo, pretty sure raw = roll. TODO: Figure out what angle is origin.
+Attribute annotations: 40 same as celeba.
+
+### ADE20K
+
+The official website doesn't seem to accept new registrations. Instead, I downloaded the data from here.
+http://sceneparsing.csail.mit.edu/
+
+From there I got the ADEChallengeData2016.zip file.
+
+Color code:
+https://docs.google.com/spreadsheets/d/1se8YEtb2detS7OuPE86fXGyD269pMycAWe2mtKUj2W8/edit?gid=0#gid=0

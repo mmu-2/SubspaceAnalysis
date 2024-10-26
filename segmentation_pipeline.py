@@ -7,13 +7,9 @@ import argparse
 import wandb
 import os
 
-from process_cubs import CUB
-from cubs_dataset import CUBSegmentationDataset
+from cubs_dataset import CUB, CUBSegmentationDataset
 
-def collate_fn(batch):
-    return tuple(zip(*batch))
-
-def get_dataset(args):
+def get_dataset(args, transform_train = None, transform_val = None):
     """
     Depending on the dataset selected, we return train_dataset, test_dataset with
     the correct transform preprocessing.
@@ -28,6 +24,9 @@ def get_dataset(args):
         train_dataset = CUBSegmentationDataset(cub.CUB_train_set)
         test_dataset = CUBSegmentationDataset(cub.CUB_val_set)
         classes = {0: 'Background', 1: 'Bird'}
+        if transform_train and transform_val:
+            train_dataset.transform = transform_train
+            test_dataset.transform = transform_val
     else:
         raise ValueError()
 
@@ -45,7 +44,7 @@ def get_model(args):
         raise ValueError()
 
     if args.model == 'dlv3rn50':
-        model = models.segmentation.deeplabv3_resnet50(pretrained=False, num_classes=num_classes)
+        model = models.segmentation.deeplabv3_resnet50(weights=None, num_classes=num_classes)
     else:
         raise ValueError()
 
@@ -55,10 +54,9 @@ def train_one_epoch(model, W, optimizer, criterion, data_loader, device):
     model.train()
     
     running_loss = 0.0
-    for images, targets in data_loader:
-        images = torch.stack([image.to(device) for image in images])
-        targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets]
-        batched_masks = torch.stack([target['masks'] for target in targets])
+    for images, target_masks in data_loader:
+        images = images.to(device)
+        target_masks = target_masks.to(device)
 
         if W:
             flattened = images.flatten(1)
@@ -69,7 +67,7 @@ def train_one_epoch(model, W, optimizer, criterion, data_loader, device):
         else:
             outputs = model(images)['out'] # [bs, classes, 224, 224]
 
-        loss = criterion(outputs, batched_masks.to(torch.float))
+        loss = criterion(outputs, target_masks.to(torch.float))
         if args.projection:
             loss = loss + (W.weight @ W.weight.T - I).square().sum()
             # loss = loss + (W.weight @ W.weight.T - I).abs().sum()
@@ -78,7 +76,7 @@ def train_one_epoch(model, W, optimizer, criterion, data_loader, device):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-    return running_loss
+    return {'loss': running_loss}
 
 @torch.inference_mode()
 def evaluate(model, W, dataloader, device):
@@ -97,9 +95,9 @@ def evaluate(model, W, dataloader, device):
 
     model.eval()
 
-    for images, targets in dataloader:
-        images = torch.stack([image.to(device) for image in images])
-        targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets]
+    for images, target_masks in dataloader:
+        images = images.to(device)
+        target_masks = target_masks.to(device)
         
         if W:
             flattened = images.flatten(1)
@@ -115,10 +113,9 @@ def evaluate(model, W, dataloader, device):
         # Create binary masks for each class
         num_classes = outputs.shape[1]
         masks = (pred[:, None, ...] == torch.arange(num_classes, device=device)[None, :, None, None]).float()  # shape: [bs, classes, 224, 224]
-        batched_masks = torch.stack([target['masks'] for target in targets])
-        intersection = (masks * batched_masks).sum(dim=(0,2,3))
+        intersection = (masks * target_masks).sum(dim=(0,2,3))
         intersections += intersection
-        unions += (masks.sum(dim=(0,2,3)) + batched_masks.sum(dim=(0,2,3))) - intersection
+        unions += (masks.sum(dim=(0,2,3)) + target_masks.sum(dim=(0,2,3))) - intersection
 
     image_batch, _ = next(iter(dataloader))
     image_batch = torch.stack([image.to(device) for image in image_batch])
@@ -129,7 +126,7 @@ def evaluate(model, W, dataloader, device):
     mIoU = (intersections / unions).sum() / len(intersections)
     print(f'mIoU: {mIoU}')
 
-    return pixel_accuracy, mIoU
+    return {'acc': pixel_accuracy, 'mIoU': mIoU}
 
 
 
@@ -145,7 +142,7 @@ def parse_args():
     parser.add_argument('--epochs', type=int, default=200, help="Number of training epochs")
     parser.add_argument('--output', type=str, default='./model_weights', help="Output path of model checkpoints")
     parser.add_argument('--k', type=int, help="Dimension of latent space from projection")
-    parser.add_argument('--dataset', type=str, choices=['cub'], required=True, help="Dataset being evaluated on.")
+    parser.add_argument('--dataset', type=str, choices=['cub', 'celebamask'], required=True, help="Dataset being evaluated on.")
     parser.add_argument('--model', type=str, choices=['dlv3rn50'], default='dlv3rn50', help="Backbone model being evaluated on.")
     parser.add_argument('--projection', action='store_true', help="Flag that turns on projection bottleneck W")
     parser.add_argument('--experiment', type=str, default='default', help="Experiment name, use for grouping in wandb")
@@ -158,8 +155,8 @@ if __name__ == '__main__':
     args = parse_args()
 
     train_dataset, test_dataset, classes = get_dataset(args)
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=collate_fn)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=collate_fn)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = get_model(args)
@@ -202,26 +199,26 @@ if __name__ == '__main__':
         print('-' * 10)
         print(f'epoch: {epoch}')
         if args.projection:
-            epoch_running_train_loss = train_one_epoch(model, W, optimizer, criterion, train_loader, device)
-            accuracy, mIoU = evaluate(model, W, test_loader, device=device)
+            train_stats = train_one_epoch(model, W, optimizer, criterion, train_loader, device)
+            val_stats = evaluate(model, W, test_loader, device=device)
         else:
-            epoch_running_train_loss = train_one_epoch(model, None, optimizer, criterion, train_loader, device)
-            accuracy, mIoU = evaluate(model, None, test_loader, device=device)
-    
+            train_stats = train_one_epoch(model, None, optimizer, criterion, train_loader, device)
+            val_stats = evaluate(model, None, test_loader, device=device)
+
         if not args.no_log:
-            log = {
-                "epoch": epoch,
-                ("train/loss"): epoch_running_train_loss,
-                ("val/acc"): accuracy,
-                ("val/mIoU"): mIoU,
-            }
+            log = {'epoch': epoch,}
+            for k,v in train_stats.items():
+                log.update({f'train/{k}': v})
+            for k,v in val_stats.items():
+                log.update({f'val/{k}': v})
+
             if args.projection:
                 log["W@W.T"] = (W.weight @ W.weight.T - I).square().sum()
             wandb.log(log)
 
         # deep copy the model
-        if accuracy > best_acc:
-            best_acc = accuracy
+        if val_stats['acc'] > best_acc:
+            best_acc = val_stats['acc']
             best_epoch = epoch
             os.makedirs(args.output, exist_ok=True)
             torch.save(model.state_dict(), os.path.join(args.output, f'{args.experiment}-{args.dataset}-{args.trial}_best_segmentation_model.pth'))

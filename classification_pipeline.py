@@ -2,7 +2,6 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision.transforms import v2
 from torchvision import models, datasets
-from process_cubs import CUB, CUB_Image
 import argparse
 from PIL import Image
 import os
@@ -10,10 +9,80 @@ import torch.nn as nn
 import wandb
 import numpy as np
 
-from cubs_dataset import CUBClassificationDataset
+from cubs_dataset import CUB, CUBClassificationDataset
 
 # python classification_pipeline.py --epochs 100 --k 32 --dataset fmnist --model rn18 --projection --experiment test --trial 1
 # python classification_pipeline.py --epochs 10 --k 32 --dataset fmnist --model rn18 --projection --experiment test --trial 1 --no_log
+
+def train_one_epoch(args, model, W, criterion, dataloader, optimizer, device):
+    model.train()
+    running_loss = 0.0
+    running_corrects = 0
+    for inputs, labels in dataloader:
+        inputs = inputs.to(device)
+        labels = labels.to(device)
+
+        optimizer.zero_grad()
+
+        with torch.set_grad_enabled(True):
+                    
+            if args.projection:
+                flattened = inputs.flatten(1)
+                down_projected = flattened @ W.weight.T
+                reconstructed = down_projected @ W.weight
+                reshaped_input = reconstructed.reshape(inputs.shape)
+                outputs = model(reshaped_input)
+            else:
+                outputs = model(inputs)
+            
+            _, preds = torch.max(outputs, 1)
+            loss = criterion(outputs, labels)
+
+            # statistics
+            running_loss += loss.item() * inputs.size(0)
+            running_corrects += torch.sum(preds == labels.data)
+
+            if args.projection:
+                loss = loss + (W.weight @ W.weight.T - I).square().sum()
+                # loss = loss + (W.weight @ W.weight.T - I).abs().sum()
+
+            loss.backward()
+            optimizer.step()
+    epoch_loss = running_loss / len(dataloader.dataset)
+    epoch_acc = running_corrects.double() / len(dataloader.dataset)
+
+    return {'loss': epoch_loss, 'acc': epoch_acc}
+
+def evaluate(args, model, W, criterion, dataloader, device):
+    model.eval()
+    running_loss = 0.0
+    running_corrects = 0
+    for inputs, labels in dataloader:
+        inputs = inputs.to(device)
+        labels = labels.to(device)
+
+        with torch.set_grad_enabled(False):
+                    
+            if args.projection:
+                flattened = inputs.flatten(1)
+                down_projected = flattened @ W.weight.T
+                reconstructed = down_projected @ W.weight
+                reshaped_input = reconstructed.reshape(inputs.shape)
+                outputs = model(reshaped_input)
+            else:
+                outputs = model(inputs)
+            
+            _, preds = torch.max(outputs, 1)
+            loss = criterion(outputs, labels)
+            
+            # statistics
+            running_loss += loss.item() * inputs.size(0)
+            running_corrects += torch.sum(preds == labels.data)
+    epoch_loss = running_loss / len(dataloader.dataset)
+    epoch_acc = running_corrects.double() / len(dataloader.dataset)
+
+    return {'loss': epoch_loss, 'acc': epoch_acc}
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Classification dataset pipeline.")
@@ -33,19 +102,21 @@ def parse_args():
     parser.add_argument('--no_log', action='store_true', help="Flag that turns off wandb. Useful during debugging.")
     return parser.parse_args()
 
-def get_dataset(args):
+def get_dataset(args, transform_train = None, transform_val = None):
     """
     Depending on the dataset selected, we return train_dataset, test_dataset with
     the correct transform preprocessing.
+
+    It's expected that you pass in both transform_train and transform_val, or else you pass in neither.
     """
 
     # Set some default data root directories for datasets.
     if not args.data_dir:
-        if args.dataset == 'cub': args.data_dir = './CUB_200_2011/'
-        elif args.dataset == 'fmnist': args.data_dir = './fashionmnist/'
-        elif args.dataset == 'cifar10': args.data_dir = './cifar10/'
-        elif args.dataset == 'celeba': args.data_dir = './celeba/'
-        elif args.dataset == 'caltech101': args.data_dir = './caltech101/'
+        if args.dataset == 'cub': args.data_dir = './data/CUB_200_2011/'
+        elif args.dataset == 'fmnist': args.data_dir = './data/fashionmnist/'
+        elif args.dataset == 'cifar10': args.data_dir = './data/cifar10/'
+        elif args.dataset == 'celeba': args.data_dir = './data/celeba/'
+        elif args.dataset == 'caltech101': args.data_dir = './data/caltech101/'
         else:
             raise ValueError()
 
@@ -54,67 +125,76 @@ def get_dataset(args):
         cub = CUB(args)
         train_dataset = CUBClassificationDataset(cub.CUB_train_set)
         test_dataset = CUBClassificationDataset(cub.CUB_val_set)
+        if transform_train and transform_val:
+            train_dataset.transform = transform_train
+            test_dataset.transform = transform_val
     elif args.dataset == 'fmnist':
-        transform = v2.Compose([
-            v2.Grayscale(1),
-            v2.ToImage(),
-            v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize([0.5], [0.5])
-        ])
+        if not transform_train and not transform_val:
+            transform_train = v2.Compose([
+                v2.Grayscale(1),
+                v2.ToImage(),
+                v2.ToDtype(torch.float32, scale=True),
+                v2.Normalize([0.5], [0.5])
+            ])
+            transform_val = transform_train
         train_dataset = datasets.FashionMNIST(
             root=args.data_dir,
             train=True,
             download=True,
-            transform=transform
+            transform=transform_train
         )
         test_dataset = datasets.FashionMNIST(
             root=args.data_dir,
             train=False,
             download=True,
-            transform=transform
+            transform=transform_val
         )
     # normalization constants coming from 
     # https://github.com/Armour/pytorch-nn-practice/blob/master/utils/meanstd.py
     elif args.dataset == 'cifar10':
-        transform = v2.Compose([
-            v2.ToImage(),
-            v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize([0.49139968, 0.48215841, 0.44653091],
-                         [0.24703223, 0.24348513, 0.26158784]),
-        ])
+        if not transform_train and not transform_val:
+            transform_train = v2.Compose([
+                v2.ToImage(),
+                v2.ToDtype(torch.float32, scale=True),
+                v2.Normalize([0.49139968, 0.48215841, 0.44653091],
+                            [0.24703223, 0.24348513, 0.26158784]),
+            ])
+            transform_val = transform_train
         train_dataset = datasets.CIFAR10(
             root=args.data_dir,
             train=True,
             download=True,
-            transform=transform
+            transform=transform_train
         )
         test_dataset = datasets.CIFAR10(
             root=args.data_dir,
             train=False,
             download=True,
-            transform=transform
+            transform=transform_val
         )
 
     elif args.dataset == 'celeba':
-        transform = v2.Compose([
-            v2.ToImage(),
-            v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize([.5, .5, .5], [.5, .5, .5])
-        ])
+        if not transform_train and not transform_val:
+            transform_train = v2.Compose([
+                v2.ToImage(),
+                v2.ToDtype(torch.float32, scale=True),
+                v2.Normalize([.5, .5, .5], [.5, .5, .5])
+            ])
+            transform_val = transform_train
 
         train_dataset = datasets.CelebA(
             root=args.data_dir,
             split='train', #train, valid, test, all
             target_type='identity', #attr, identity, bbox, landmarks
             download=True,
-            transform=transform
+            transform=transform_train
         )
         test_dataset = datasets.CelebA(
             root=args.data_dir,
             split='valid',
             target_type='identity',
             download=True,
-            transform=transform
+            transform=transform_val
         )
         # This fixes the ids to be indexed by 0.
         # Hacky fix because it assumes knowledge of internal variables but it should work for our purposes.
@@ -122,24 +202,26 @@ def get_dataset(args):
         train_dataset.identity = (train_dataset.identity - 1).clone().detach()
         test_dataset.identity = (test_dataset.identity - 1).clone().detach()
     elif args.dataset == 'caltech101':
-        transform = v2.Compose([
-            v2.Resize(224),
-            v2.CenterCrop(224), #variable sized images
-            v2.ToImage(),
-            v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize([.5, .5, .5], [.5, .5, .5])
-        ])
+        if not transform_train and not transform_val:
+            transform_train = v2.Compose([
+                v2.Resize(224),
+                v2.CenterCrop(224), #variable sized images
+                v2.ToImage(),
+                v2.ToDtype(torch.float32, scale=True),
+                v2.Normalize([.5, .5, .5], [.5, .5, .5])
+            ])
+            transform_val = transform_train
         train_dataset = datasets.Caltech101(
             root=args.data_dir,
             target_type='category',
             download=True,
-            transform=transform
+            transform=transform_train
         )
         test_dataset = datasets.Caltech101(
             root=args.data_dir,
             target_type='category',
             download=True,
-            transform=transform
+            transform=transform_val
         )
     else:
         raise ValueError()
@@ -239,86 +321,35 @@ if __name__ == '__main__':
         print('-' * 10)
         print(f'epoch {epoch}')
 
-        # Each epoch has a training and validation phase
-        for phase in ['train', 'val']:
-            if phase == 'train':
-                model.train()  # Set model to training mode
-            else:
-                model.eval()   # Set model to evaluate mode
+        if args.projection:
+            train_stats = train_one_epoch(args, model, W, criterion, train_loader, optimizer, device)
+            val_stats = evaluate(args, model, W, criterion, test_loader, device)
+        else:
+            train_stats = train_one_epoch(args, model, None, criterion, train_loader, optimizer, device)
+            val_stats = evaluate(args, model, None, criterion, test_loader, device)
 
-            running_loss = 0.0
-            running_corrects = 0
+        print(f'train Loss: {train_stats['loss']:.4f} Acc: {train_stats['acc']:.4f}')
+        print(f'val Loss: {val_stats['loss']:.4f} Acc: {val_stats['acc']:.4f}')
 
-            # Iterate over data.
-            for inputs, labels in dataloaders[phase]:
-                
-                inputs = inputs.to(device)
-                labels = labels.to(device)
-                
-                optimizer.zero_grad()
+        if not args.no_log:
+            log = {'epoch': epoch,}
+            for k,v in train_stats.items():
+                log.update({f'train/{k}': v})
+            for k,v in val_stats.items():
+                log.update({f'val/{k}': v})
 
-                with torch.set_grad_enabled(phase == 'train'):
-                    
-                    if args.projection:
-                        flattened = inputs.flatten(1)
-                        down_projected = flattened @ W.weight.T
-                        reconstructed = down_projected @ W.weight
-                        reshaped_input = reconstructed.reshape(inputs.shape)
-                        outputs = model(reshaped_input)
-                    else:
-                        outputs = model(inputs)
-                    
-                    _, preds = torch.max(outputs, 1)
-                    loss = criterion(outputs, labels)
+            if args.projection:
+                log["W@W.T"] = (W.weight @ W.weight.T - I).square().sum()
+            wandb.log(log)
 
-                    if args.projection:
-                        loss = loss + (W.weight @ W.weight.T - I).square().sum()
-                        # loss = loss + (W.weight @ W.weight.T - I).abs().sum()
-
-                    # backward + optimize only if in training phase
-                    if phase == 'train':
-                        loss.backward()
-                        optimizer.step()
-
-                # statistics
-                running_loss += loss.item() * inputs.size(0)
-                running_corrects += torch.sum(preds == labels.data)
-            if phase == 'train':
-                optimizer.step()
-
-            epoch_loss = running_loss / dataset_sizes[phase]
-            epoch_acc = running_corrects.double() / dataset_sizes[phase]
-            
-            
-            print(f'{phase} Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
-
-            # print(((W.weight @ W.weight.T) - I).square().sum())
-
-            if phase == 'train':
-                if not args.no_log:
-                    wandb.log({
-                        "epoch": epoch,
-                        ("train/loss"): epoch_loss,
-                        ("train/acc"): epoch_acc,
-                    }, commit=False)
-            else:
-                if not args.no_log:
-                    log = {
-                        ("val/loss"): epoch_loss,
-                        ("val/acc"): epoch_acc,
-                    }
-                    if args.projection:
-                        log["W@W.T"] = (W.weight @ W.weight.T - I).square().sum()
-                    wandb.log(log)
-
-            # deep copy the model
-            if phase == 'val' and epoch_acc > best_acc:
-                best_acc = epoch_acc
-                best_epoch = epoch
-                os.makedirs(args.output, exist_ok=True)
-                torch.save(model.state_dict(), os.path.join(args.output, f'{args.experiment}-{args.dataset}-{args.trial}_best_classification_model.pth'))
-                if args.projection:
-                    torch.save(W.state_dict(), os.path.join(args.output, f'{args.experiment}-{args.dataset}-{args.trial}_best_classification_projection.pth'))
+        # save best model
+        if val_stats['acc'] > best_acc:
+            best_acc = val_stats['acc']
+            best_epoch = epoch
+            os.makedirs(args.output, exist_ok=True)
+            torch.save(model.state_dict(), os.path.join(args.output, f'{args.experiment}-{args.dataset}-{args.trial}_best_classification_model.pth'))
+            if args.projection:
+                torch.save(W.state_dict(), os.path.join(args.output, f'{args.experiment}-{args.dataset}-{args.trial}_best_classification_projection.pth'))
 
     print(f'Best val Acc: {best_acc:4f} at epoch {best_epoch}')
 
