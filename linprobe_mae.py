@@ -80,7 +80,7 @@ def train_one_epoch(model, W, criterion, dataloader, optimizer, device, epoch, l
             reconstructed = down_projected @ W.weight
             images = reconstructed.reshape(images.shape)
 
-        with torch.cuda.amp.autocast():
+        with torch.amp.autocast('cuda'):
             outputs = model(images)
             loss = criterion(outputs, targets)
             _, preds = torch.max(outputs, 1)
@@ -102,7 +102,7 @@ def train_one_epoch(model, W, criterion, dataloader, optimizer, device, epoch, l
         running_corrects += torch.sum(preds == targets.data)
 
     epoch_loss = running_loss / len(dataloader.dataset)
-    epoch_acc = running_corrects.double() / len(dataloader.dataset)
+    epoch_acc = running_corrects.double().item() / len(dataloader.dataset)
 
     return {'loss': epoch_loss, 'acc': epoch_acc}
 
@@ -174,12 +174,15 @@ if __name__ == '__main__':
         v2.ToImage(),
         v2.ToDtype(torch.float32, scale=True),
         v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+
+    # I was right, linear probe MAE always needs to do classification at the end of the day.
+    train_dataset, test_dataset = get_classification_dataset(args, transform_train=transform_train, transform_val=transform_val)
     
     #TODO: I think this and the pretrain_mae.py version will end up being useless
-    if args.dataset_task == 'classification':
-        train_dataset, test_dataset = get_classification_dataset(args, transform_train=transform_train, transform_val=transform_val)
-    else:
-        train_dataset, test_dataset, classes = get_segmentation_dataset(args, transform_train=transform_train, transform_val=transform_val)
+    # if args.dataset_task == 'classification':
+        # train_dataset, test_dataset = get_classification_dataset(args, transform_train=transform_train, transform_val=transform_val)
+    # else:
+    #     train_dataset, test_dataset, classes = get_segmentation_dataset(args, transform_train=transform_train, transform_val=transform_val)
         
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
@@ -249,8 +252,8 @@ if __name__ == '__main__':
     
     if not args.no_log:
         wandb.init(
-            project="mae_pretrain",
-            name=f'{args.experiment}-{args.dataset}-{args.trial}',
+            project="mae_linprobe",
+            name=f'{args.experiment}-{args.dataset}-{args.dataset_task}-{args.trial}',
             config={
                 "learning_rate": args.lr,
                 "batch_size": args.batch_size,
@@ -264,6 +267,7 @@ if __name__ == '__main__':
             },
             settings=wandb.Settings(_disable_stats=True, _disable_meta=True)
         )
+    print(args)
 
     best_acc = 0.0
     best_epoch = 0
@@ -296,10 +300,11 @@ if __name__ == '__main__':
 
             output_dir = Path(args.output)
             epoch_name = str(epoch)
-            checkpoint_path = output_dir / ('checkpoint-%s.pth' % epoch_name)
+            # checkpoint_path = output_dir / (f'{args.experiment}-{args.dataset}-{args.k}-checkpoint-{epoch_name}.pth')
+            checkpoint_path = output_dir / (f'{args.experiment}-{args.dataset}-{args.k}-checkpoint.pth')
             # Append the saved checkpoint to the list
             saved_checkpoints.append(checkpoint_path)
-            if len(saved_checkpoints) > 3:
+            if len(saved_checkpoints) > 1:
                 oldest_checkpoint = saved_checkpoints.pop(0)
                 if os.path.exists(oldest_checkpoint):
                     os.remove(oldest_checkpoint)

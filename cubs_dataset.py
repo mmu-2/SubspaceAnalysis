@@ -328,11 +328,8 @@ class CUBClassificationDataset(Dataset):
             self.image_paths.append(cub_image.img_path)
             self.label_ids.append(cub_image.label - 1) #Note I'm subtracting 1 here because PyTorch wants index from 0.
         self.transform = v2.Compose([
-            # Random resize crop is standard, but I'm concerned that the birds task is too fine-grained for that.
-            v2.Resize(224),
-            v2.CenterCrop(224),
-            # v2.RandomResizedCrop(224),
-            # v2.RandomHorizontalFlip(),
+            v2.RandomResizedCrop(224),
+            v2.RandomHorizontalFlip(),
             v2.ToImage(),
             v2.ToDtype(torch.float32, scale=True),
             # v2.Normalize(mean=[0.4825, 0.4904, 0.4227], std=[0.2295, 0.2250, 0.2597]) #Cubs normalization values I calculated
@@ -355,8 +352,7 @@ class CUBSegmentationDataset(Dataset):
         for cub_image in cub_images:
             self.image_paths.append(cub_image.img_path)
             self.mask_paths.append(cub_image.seg_path)
-            #TODO: The classification model is only doing okay at the moment. I suspect instance segmentation will be too hard
-            # consider switching to just segmenting birds and this will still be a viable task.
+
             self.label_ids.append(cub_image.label) #Note I'm not subtracting 1 here because PyTorch wants index 0 to be background
             self.image_ids.append(cub_image.id)
         self.transform = v2.Compose([
@@ -380,11 +376,5 @@ class CUBSegmentationDataset(Dataset):
         target = tv_tensors.Mask(torch.cat([background_mask, class1], dim=0))
         img, target = self.transform(img, target)
 
-        if target.shape != (2, 224, 224):
-            print('error at',self.image_ids[idx])
-            print('target[masks].shape',target['masks'].shape)
-            print('mask.shape',mask.shape)
-            print('self.image_paths[idx]',self.image_paths[idx])
-            print('self.mask_paths[idx]',self.mask_paths[idx])
         return img, target
     

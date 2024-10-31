@@ -260,7 +260,7 @@ class NativeScalerWithGradNormCount:
     state_dict_key = "amp_scaler"
 
     def __init__(self):
-        self._scaler = torch.cuda.amp.GradScaler()
+        self._scaler = torch.amp.GradScaler('cuda')
 
     def __call__(self, loss, optimizer, clip_grad=None, parameters=None, create_graph=False, update_grad=True):
         self._scaler.scale(loss).backward(create_graph=create_graph)
@@ -304,7 +304,7 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler):
     output_dir = Path(args.output)
     epoch_name = str(epoch)
     if loss_scaler is not None:
-        checkpoint_paths = [output_dir / ('checkpoint-%s.pth' % epoch_name)]
+        checkpoint_paths = [output_dir / (f'{args.experiment}-{args.dataset}-{args.k}-{args.dataset_task}-checkpoint.pth')]
         for checkpoint_path in checkpoint_paths:
             to_save = {
                 'model': model_without_ddp.state_dict(),

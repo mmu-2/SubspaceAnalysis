@@ -41,6 +41,23 @@ def get_model(args):
     
     return model
 
+def to_image(image_tensor: torch.Tensor):
+    """Processes a pytorch tensor into PIL format."""
+    imagenet_mean = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32)
+    imagenet_std = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32)
+    # image is [H, W, 3], we normalize and convert to uint8
+    # print('image_tensor.shape',image_tensor.shape)
+    # print('image_tensor.dtype',image_tensor.dtype)
+    # print('imagenet_std.shape',imagenet_std.shape)
+    # print('imagenet_std.dtype',imagenet_std.dtype)
+    # image_tensor = image_tensor.to(torch.float32)
+    image_tensor = image_tensor * imagenet_std + imagenet_mean
+    image_tensor = image_tensor * 255
+    image = torch.clip(image_tensor, 0, 255).int().numpy()
+    # convert to PIL image and save
+    image_pil = Image.fromarray(image.astype(np.uint8))
+    return image_pil
+
 def train_one_epoch(model, W, dataloader, optimizer, device, epoch, loss_scaler, args=None):
     model.train()
 
@@ -56,6 +73,8 @@ def train_one_epoch(model, W, dataloader, optimizer, device, epoch, loss_scaler,
 
         images = images.to(device)
         target_masks = target_masks.to(device)
+        unprojected_image = images.detach().cpu()
+        unprojected_image = torch.einsum('nchw->nhwc', unprojected_image)
 
         if W:
             flattened = images.flatten(1)
@@ -63,37 +82,10 @@ def train_one_epoch(model, W, dataloader, optimizer, device, epoch, loss_scaler,
             reconstructed = down_projected @ W.weight
             images = reconstructed.reshape(images.shape)
 
-        with torch.cuda.amp.autocast():
+        with torch.amp.autocast('cuda'):
             loss, y, mask = model(images, mask_ratio=args.mask_ratio)
 
-
-        # y = model.unpatchify(y)
-        # y = torch.einsum('nchw->nhwc', y).detach().cpu()
-        # # visualize the mask
-        # mask = mask.detach()
-        # mask = mask.unsqueeze(-1).repeat(1, 1, model.patch_embed.patch_size[0]**2 *3)  # (N, H*W, p*p*3)
-        # mask = model.unpatchify(mask)  # 1 is removing, 0 is keeping
-        # mask = torch.einsum('nchw->nhwc', mask).detach().cpu()
-        # x = torch.einsum('nchw->nhwc', x)
-        # # masked image
-        # im_masked = x * (1 - mask)
-        # # MAE reconstruction pasted with visible patches
-        # im_paste = x * (1 - mask) + y * mask
-        # # make the plt figure larger
-        # plt.rcParams['figure.figsize'] = [24, 24]
-        # plt.subplot(1, 4, 1)
-        # def show_image(image, title=''):
-        #     imagenet_mean = np.array([0.485, 0.456, 0.406])
-        #     imagenet_std = np.array([0.229, 0.224, 0.225])
-        #     # image is [H, W, 3]
-        #     assert image.shape[2] == 3
-        #     plt.imshow(torch.clip((image * imagenet_std + imagenet_mean) * 255, 0, 255).int())
-        #     plt.title(title, fontsize=16)
-        #     plt.axis('off')
-        #     return
-        # show_image(x[0], "original")
-
-        
+        ### Visualization Code ###        
         x = images.detach().cpu()
         # assuming x, y, and mask are already defined
         y = model.unpatchify(y)
@@ -108,22 +100,8 @@ def train_one_epoch(model, W, dataloader, optimizer, device, epoch, loss_scaler,
         im_masked = x * (1 - mask)
         # MAE reconstruction pasted with visible patches
         im_paste = x * (1 - mask) + y * mask
-        # function to save image without using plt
-        def save_image(image_tensor, filename):
-            imagenet_mean = np.array([0.485, 0.456, 0.406])
-            imagenet_std = np.array([0.229, 0.224, 0.225])
-            # image is [H, W, 3], we normalize and convert to uint8
-            image = torch.clip((image_tensor * imagenet_std + imagenet_mean) * 255, 0, 255).int().numpy()
-            # convert to PIL image and save
-            image_pil = Image.fromarray(image.astype(np.uint8))
-            image_pil.save(filename)
 
-        # save the original image
-        # if data_iter_step == 0:
-        #     save_image(x[0], f'original_image{epoch}.png')
-        #     save_image(im_masked[0], f'masked{epoch}.png')
-        #     save_image(y[0], f'reconstruction{epoch}.png')
-        #     save_image(im_paste[0], f'reconstruction_plus_visible{epoch}.png')
+        
 
         loss_value = loss.item()
 
@@ -137,64 +115,17 @@ def train_one_epoch(model, W, dataloader, optimizer, device, epoch, loss_scaler,
         if (data_iter_step + 1) % accum_iter == 0:
             optimizer.zero_grad()
 
-        running_loss += loss
+        running_loss += loss_value
     lr = optimizer.param_groups[0]["lr"]
 
-    return {'running_loss': running_loss, 'lr': lr}
-
-@torch.inference_mode()
-def evaluate(model, W, dataloader, device):
-    #Find evaluation metrics:
-    #ADE20K:
-    # - Pixel accuracy: proportion of correctly classified pixels
-    # - Mean accuracy: the proportion of correctly classified pixels averaged over all the classes
-    # - Mean IoU: IoU between pred and GT pixels, averaged over all classes
-    # - Weighted IoU: IoU weighted by the total pixel ratio of the class (i'm guessing if more of a class in an image, weight it more.)
-    # The formula for pixel accuracy seems to change depending on who implemented it...
-    #PASCAL VOC:
-    # mIoU: averaged across 21 classes
-
-    intersections = 0
-    unions = 0
-
-    model.eval()
-
-    for images, target_masks in dataloader:
-        images = images.to(device)
-        target_masks = target_masks.to(device)
-        
-        if W:
-            flattened = images.flatten(1)
-            down_projected = flattened @ W.weight.T
-            reconstructed = down_projected @ W.weight
-            reshaped_input = reconstructed.reshape(images.shape)
-            outputs = model(reshaped_input)['out']
-        else:
-            outputs = model(images)['out'] # [bs, classes, 224, 224]
-
-        pred = torch.argmax(outputs, dim=1)  # shape: [bs, 224, 224]
-
-        # Create binary masks for each class
-        num_classes = outputs.shape[1]
-        masks = (pred[:, None, ...] == torch.arange(num_classes, device=device)[None, :, None, None]).float()  # shape: [bs, classes, 224, 224]
-        intersection = (masks * target_masks).sum(dim=(0,2,3))
-        intersections += intersection
-        unions += (masks.sum(dim=(0,2,3)) + target_masks.sum(dim=(0,2,3))) - intersection
-
-    image_batch, _ = next(iter(dataloader))
-    image_batch = torch.stack([image.to(device) for image in image_batch])
-
-    pixel_accuracy = intersections.sum() / (len(dataloader.dataset) * 1 * image_batch.shape[2] * image_batch.shape[3])
-    print(f'pixel accuracy: {pixel_accuracy * 100:.2f}')
-
-    mIoU = (intersections / unions).sum() / len(intersections)
-    print(f'mIoU: {mIoU}')
-
-    # return pixel_accuracy, mIoU
-    return {'acc': pixel_accuracy, 'mIoU': mIoU}
-
-
-
+    return {'running_loss': running_loss,
+            'lr': lr,
+            'unprojected_image': to_image(unprojected_image[0]),
+            'original_image': to_image(x[0]),
+            'masked': to_image(im_masked[0]),
+            'reconstruction': to_image(y[0]),
+            'reconstruction_plus_visible': to_image(im_paste[0]),
+            }
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Segmentation dataset pipeline")
@@ -210,7 +141,7 @@ def parse_args():
     parser.add_argument('--epochs', type=int, default=400, help="Number of training epochs")
     
     parser.add_argument('--norm_pix_loss', action='store_true', help='Use (per-patch) normalized pixels as targets for computing loss')
-    parser.add_argument('--dataset_task', type=str, choices=['classification', 'segmentation'], help='Choose a downstream task to pull the dataset from.')
+    parser.add_argument('--dataset_task', type=str, choices=['classification', 'segmentation'], help='Tells me where to pull the dataset from.')
     parser.add_argument('--mask_ratio', default=0.75, type=float, help='Masking ratio (percentage of removed patches).')
 
 
@@ -255,8 +186,8 @@ if __name__ == '__main__':
             v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
     
     if args.dataset_task == 'classification':
-        # TODO: transform_val doesn't matter at the moment because we don't use it.
-        train_dataset, test_dataset = get_classification_dataset(args, transform_train==transform_train, transform_val=transform_train)
+        # transform_val doesn't matter at the moment because we don't use it.
+        train_dataset, test_dataset = get_classification_dataset(args, transform_train=transform_train, transform_val=transform_train)
     else:
         train_dataset, test_dataset, classes = get_segmentation_dataset(args, transform_train=transform_train, transform_val=transform_train)
         
@@ -267,19 +198,12 @@ if __name__ == '__main__':
     model = get_model(args)
     model = model.to(device)
 
-    # criterion = nn.CrossEntropyLoss(ignore_index=0, reduction='mean')
-    # criterion = nn.CrossEntropyLoss(reduction='mean') #in this case, I think it's okay to include the background
     if args.projection:
         W = torch.nn.Linear(train_dataset[0][0].flatten().shape[0], args.k, bias=False, device=device)
-        W.load_state_dict(torch.load(args.w_weights))
+        W.load_state_dict(torch.load(args.w_weights, weights_only=True))
         I = torch.eye(args.k, device=device)
 
-    # optimizer_parameters = [{'params': model.parameters(), 'lr': args.lr, 'momentum':args.momentum, 'weight_decay':args.weight_decay}]
-    # if args.projection:
-    #     optimizer_parameters.append(
-    #         {'params': W.parameters(), 'lr': args.lr}
-    #     )
-    # optimizer = torch.optim.SGD(optimizer_parameters)
+
     param_groups = add_weight_decay(model, args.weight_decay)
 
     eff_batch_size = args.batch_size * args.accum_iter
@@ -287,8 +211,6 @@ if __name__ == '__main__':
         args.lr = args.blr * eff_batch_size / 256
 
     # Don't plan to train W at this time.
-    # if args.projection:
-    #     param_groups.append({'params': W.parameters(), 'weight_decay': args.weight_decay})
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
 
     loss_scaler = NativeScaler()
@@ -314,6 +236,7 @@ if __name__ == '__main__':
             },
             settings=wandb.Settings(_disable_stats=True, _disable_meta=True)
         )
+    print(args)
 
     best_loss = 99999
     best_epoch = 0
@@ -322,20 +245,38 @@ if __name__ == '__main__':
         print(f'epoch: {epoch}')
         if args.projection:
             train_stats = train_one_epoch(model, W, train_loader, optimizer, device, epoch, loss_scaler, args=args)
-            # val_stats = evaluate(model, W, test_loader, device=device)
         else:
             train_stats = train_one_epoch(model, None, train_loader, optimizer, device, epoch, loss_scaler, args=args)
-            # val_stats = evaluate(model, None, test_loader, device=device)
-    
+
+        # return {'running_loss': running_loss,
+        #     'lr': lr,
+        #     'original_image': to_image(x[0]),
+        #     'masked': to_image(im_masked[0]),
+        #     'reconstruction': to_image(y[0]),
+        #     'reconstruction_plus_visible': to_image(im_paste[0]),
+        #     }
+
+        unprojected_image = train_stats.pop('unprojected_image', None),
+        original_image = train_stats.pop('original_image', None)
+        masked = train_stats.pop('masked', None)
+        reconstruction = train_stats.pop('reconstruction', None)
+        reconstruction_plus_visible = train_stats.pop('reconstruction_plus_visible', None)
+
         if not args.no_log:
             log = {'epoch': epoch,}
             for k,v in train_stats.items():
                 log.update({f'train/{k}': v})
-            # for k,v in val_stats.items():
-            #     log.update({f'val/{k}': v})
+
+            if epoch % 100 == 0:
+                log.update({"unprojected_image": wandb.Image(unprojected_image)})
+                log.update({"original_image": wandb.Image(original_image)})
+                log.update({"masked": wandb.Image(masked)})
+                log.update({"reconstruction": wandb.Image(reconstruction)})
+                log.update({"reconstruction_plus_visible": wandb.Image(reconstruction_plus_visible)})
 
             if args.projection:
                 log["W@W.T"] = (W.weight @ W.weight.T - I).square().sum()
+            print('log',log)
             wandb.log(log)
         
 
@@ -347,61 +288,17 @@ if __name__ == '__main__':
 
             output_dir = Path(args.output)
             epoch_name = str(epoch)
-            checkpoint_path = output_dir / ('checkpoint-%s.pth' % epoch_name)
+            # checkpoint_path = output_dir / (f'{args.experiment}-{args.dataset}-{args.k}-checkpoint-{epoch_name}.pth')
+            checkpoint_path = output_dir / (f'{args.experiment}-{args.dataset}-{args.k}-checkpoint.pth')
             # Append the saved checkpoint to the list
             saved_checkpoints.append(checkpoint_path)
-            if len(saved_checkpoints) > 3:
+            if len(saved_checkpoints) > 1:
                 oldest_checkpoint = saved_checkpoints.pop(0)
                 if os.path.exists(oldest_checkpoint):
                     os.remove(oldest_checkpoint)
         print(train_stats)
-        # if val_stats['acc'] > best_acc:
-        #     best_acc = val_stats['acc']
-        #     best_epoch = epoch
-        #     os.makedirs(args.output, exist_ok=True)
-        #     save_model(args=args, model_without_ddp=model, optimizer=optimizer, loss_scaler=loss_scaler)
 
     print(f'Best loss: {best_loss:4f} at epoch {best_epoch}')
-
-    # Log some sample images from the training dataset.
-    # if not args.no_log and args.projection:
-    #     load_path = os.path.join(args.output, f'{args.experiment}-{args.dataset}-{args.trial}_best_segmentation_projection.pth')
-    #     W.load_state_dict(torch.load(load_path))
-    #     W.eval()
-    #     for i in range(2):
-    #         image, _ = train_dataset[i] #indexing from dataset will not have batch dimension
-    #         image = image.to(device)
-    #         W.eval()
-
-    #         flattened = image.flatten()
-    #         down_projected = flattened @ W.weight.T
-    #         reconstructed = down_projected @ W.weight
-    #         reshaped_input = reconstructed.reshape(image.shape)
-    #         outputs = model(reshaped_input.unsqueeze(0))['out']
-    #         pred = torch.argmax(outputs, dim=1).squeeze().detach().cpu().numpy()
-            
-    #         np_reconstructed_image = reshaped_input.detach().cpu().numpy()
-    #         np_image = image.detach().cpu().numpy()
-            
-
-    #         wandb.log({
-    #             "Original": wandb.Image(np.transpose(np_image,(1,2,0))),
-    #             "Image @ W.T @ W": wandb.Image(np.transpose(np_reconstructed_image, (1,2,0))),
-    #             "Mask on Original Image": wandb.Image(
-    #                 np.transpose(np_image, (1,2,0)), masks={
-    #                     "predictions" : {
-    #                     "mask_data" : pred,
-    #                     "class_labels" : classes
-    #                     }
-    #                 }),
-    #             "Mask on Reconstructed Image": wandb.Image(
-    #                 np.transpose(np_reconstructed_image, (1,2,0)), masks={
-    #                     "predictions" : {
-    #                     "mask_data" : pred,
-    #                     "class_labels" : classes
-    #                     }
-    #                 }),
-    #         })
 
     if not args.no_log:
         wandb.finish()

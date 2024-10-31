@@ -49,7 +49,7 @@ def train_one_epoch(args, model, W, criterion, dataloader, optimizer, device):
             loss.backward()
             optimizer.step()
     epoch_loss = running_loss / len(dataloader.dataset)
-    epoch_acc = running_corrects.double() / len(dataloader.dataset)
+    epoch_acc = running_corrects.double().item() / len(dataloader.dataset)
 
     return {'loss': epoch_loss, 'acc': epoch_acc}
 
@@ -79,7 +79,7 @@ def evaluate(args, model, W, criterion, dataloader, device):
             running_loss += loss.item() * inputs.size(0)
             running_corrects += torch.sum(preds == labels.data)
     epoch_loss = running_loss / len(dataloader.dataset)
-    epoch_acc = running_corrects.double() / len(dataloader.dataset)
+    epoch_acc = running_corrects.double().item() / len(dataloader.dataset)
 
     return {'loss': epoch_loss, 'acc': epoch_acc}
 
@@ -340,6 +340,7 @@ if __name__ == '__main__':
 
             if args.projection:
                 log["W@W.T"] = (W.weight @ W.weight.T - I).square().sum()
+            print('log',log)
             wandb.log(log)
 
         # save best model
