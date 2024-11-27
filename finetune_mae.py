@@ -18,6 +18,7 @@ from mae.models_vit import vit_tiny_patch16, vit_tiny_patch2, vit_small_patch16,
 from mae.utils import add_weight_decay
 from mae.utils import NativeScalerWithGradNormCount as NativeScaler
 from mae.utils import save_model, load_model, adjust_learning_rate, SmoothedValue
+from mae.utils import param_groups_lrd
 from mae.pos_embed import interpolate_pos_embed
 from mae.lars import LARS
 from timm.models.layers import trunc_normal_
@@ -142,6 +143,7 @@ def parse_args():
     parser.add_argument('--weight_decay', type=float, default=0.05, help='weight decay (default: 0.05)')
     parser.add_argument('--lr', type=float, default=None, metavar='LR', help='learning rate (absolute lr)')
     parser.add_argument('--blr', type=float, default=1e-3, metavar='LR', help='base learning rate: absolute_lr = base_lr * total_batch_size / 256')
+    parser.add_argument('--layer_decay', type=float, default=0.75, help='layer-wise lr decay from ELECTRA/BEiT') #seems to be .65 for distributed and .75 for others
     parser.add_argument('--min_lr', type=float, default=0., metavar='LR', help='lower lr bound for cyclic schedulers that hit 0')
     parser.add_argument('--warmup_epochs', type=int, default=40, metavar='N', help='epochs to warmup LR')
     parser.add_argument('--accum_iter', default=8, type=int,
@@ -236,17 +238,8 @@ if __name__ == '__main__':
         else:
             assert set(msg.missing_keys) == {'head.weight', 'head.bias'}
 
-        # manually initialize fc layer: following MoCo v3
-        trunc_normal_(model.head.weight, std=0.01)
-
-    # for linear prob only
-    # hack: revise model's head with BN
-    model.head = torch.nn.Sequential(torch.nn.BatchNorm1d(model.head.in_features, affine=False, eps=1e-6), model.head)
-    # freeze all but the head
-    for _, p in model.named_parameters():
-        p.requires_grad = False
-    for _, p in model.head.named_parameters():
-        p.requires_grad = True
+        # this differs from linprobe_mae.py, I have no idea why they chose to do this.
+        trunc_normal_(model.head.weight, std=2e-5)
 
     model = model.to(device)
     model_without_ddp = model
@@ -259,10 +252,11 @@ if __name__ == '__main__':
     if args.lr is None:  # only base_lr is specified
         args.lr = args.blr * eff_batch_size / 256
 
-    # criterion = nn.CrossEntropyLoss(ignore_index=0, reduction='mean')
-    # criterion = nn.CrossEntropyLoss(reduction='mean') #in this case, I think it's okay to include the background
-
-    optimizer = LARS(model_without_ddp.head.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    param_groups = param_groups_lrd(model_without_ddp, args.weight_decay,
+        no_weight_decay_list=model_without_ddp.no_weight_decay(),
+        layer_decay=args.layer_decay
+    )
+    optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
     loss_scaler = NativeScaler()
     criterion = nn.CrossEntropyLoss()
 
@@ -272,7 +266,7 @@ if __name__ == '__main__':
     
     if not args.no_log:
         wandb.init(
-            project="mae_linprobe",
+            project="mae_finetune",
             name=f'{args.experiment}-{args.dataset}-{args.dataset_task}-{args.trial}',
             config={
                 "learning_rate": args.lr,

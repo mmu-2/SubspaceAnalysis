@@ -15,7 +15,7 @@ from pathlib import Path
 from segmentation_pipeline import get_dataset as get_segmentation_dataset
 from classification_pipeline import get_dataset as get_classification_dataset
 
-from mae.models_mae import mae_vit_base_patch16, mae_vit_large_patch16, mae_vit_huge_patch14
+from mae.models_mae import mae_vit_tiny_patch16, mae_vit_tiny_patch2, mae_vit_small_patch16, mae_vit_base_patch16, mae_vit_large_patch16, mae_vit_huge_patch14
 from mae.utils import add_weight_decay
 from mae.utils import NativeScalerWithGradNormCount as NativeScaler
 from mae.utils import save_model, load_model, adjust_learning_rate, SmoothedValue
@@ -30,12 +30,25 @@ def get_model(args):
     The model will not be moved to cuda.
     """
 
-    if args.model == 'mae_vit_base_patch16':
-        model = mae_vit_base_patch16(norm_pix_loss=args.norm_pix_loss)
+    if args.dataset == 'cub': img_size = 224
+    elif args.dataset == 'fmnist': img_size = 28
+    elif args.dataset == 'cifar10': img_size = 32
+    elif args.dataset == 'celeba': img_size = 224
+    elif args.dataset == 'caltech101': img_size = 224
+    else: raise ValueError()
+
+    if args.model == 'mae_vit_tiny_patch16':
+        model = mae_vit_tiny_patch16(norm_pix_loss=args.norm_pix_loss, img_size=img_size)
+    if args.model == 'mae_vit_tiny_patch2':
+        model = mae_vit_tiny_patch2(norm_pix_loss=args.norm_pix_loss, img_size=img_size)
+    elif args.model == 'mae_vit_small_patch16':
+        model = mae_vit_small_patch16(norm_pix_loss=args.norm_pix_loss, img_size=img_size)
+    elif args.model == 'mae_vit_base_patch16':
+        model = mae_vit_base_patch16(norm_pix_loss=args.norm_pix_loss, img_size=img_size)
     elif args.model == 'mae_vit_large_patch16':
-        model = mae_vit_large_patch16(norm_pix_loss=args.norm_pix_loss)
+        model = mae_vit_large_patch16(norm_pix_loss=args.norm_pix_loss, img_size=img_size)
     elif args.model == 'mae_vit_huge_patch14':
-        model = mae_vit_huge_patch14(norm_pix_loss=args.norm_pix_loss)
+        model = mae_vit_huge_patch14(norm_pix_loss=args.norm_pix_loss, img_size=img_size)
     else:
         raise ValueError()
     
@@ -102,7 +115,8 @@ def train_one_epoch(model, W, dataloader, optimizer, device, epoch, loss_scaler,
         im_paste = x * (1 - mask) + y * mask
 
         
-
+        if args.train_projection:
+            loss = loss + (W.weight @ W.weight.T - I).square().sum()
         loss_value = loss.item()
 
         if not math.isfinite(loss_value):
@@ -135,7 +149,7 @@ def parse_args():
 
     # Dataset parameters
     parser.add_argument('--data_dir', type=str, default=None, help='Directory where the dataset is located.')
-    parser.add_argument('--dataset', type=str, choices=['cub', 'celebamask'], required=True, help="Dataset being evaluated on.")
+    parser.add_argument('--dataset', type=str, choices=['cub', 'celebamask', 'cifar10'], required=True, help="Dataset being evaluated on.")
     parser.add_argument('--batch_size', type=int, default=32, help="Batch size for training.")
     parser.add_argument('--num_workers', type=int, default=4, help="Number of workers for the dataloader.")
     parser.add_argument('--epochs', type=int, default=400, help="Number of training epochs")
@@ -153,12 +167,13 @@ def parse_args():
     parser.add_argument('--warmup_epochs', type=int, default=40, metavar='N', help='epochs to warmup LR')
     parser.add_argument('--accum_iter', default=8, type=int,
                         help='Accumulate gradient iterations (for increasing the effective batch size under memory constraints)')
-
+    parser.add_argument('--data_aug', action='store_true', help="Flag that turns on data augmentations.")
 
     
     parser.add_argument('--output', type=str, default='./model_weights', help="Output path of model checkpoints")
     parser.add_argument('--model', type=str, 
-                        choices=['mae_vit_base_patch16', 'mae_vit_large_patch16', 'mae_vit_huge_patch14'],
+                        choices=['mae_vit_tiny_patch16','mae_vit_tiny_patch2',
+                                 'mae_vit_small_patch16','mae_vit_base_patch16', 'mae_vit_large_patch16', 'mae_vit_huge_patch14'],
                         default='mae_vit_base_patch16', 
                         help="Backbone model being evaluated on.")
     parser.add_argument('--resume', default='', help='resume from checkpoint')
@@ -166,6 +181,7 @@ def parse_args():
     # Projection parameters
     parser.add_argument('--k', type=int, help="Dimension of latent space from projection")
     parser.add_argument('--projection', action='store_true', help="Flag that turns on projection bottleneck W")
+    parser.add_argument('--train_projection', action='store_true', help="Flag that updates projection W weights. Projection flag must also be on for this.")
     parser.add_argument('--w_weights', type=str, default='', help='Path to load the weights of a pretrained projection W.')
 
     # Logging parameters
@@ -178,12 +194,15 @@ if __name__ == '__main__':
     
     args = parse_args()
 
-    transform_train = v2.Compose([
-            v2.RandomResizedCrop((224, 224), scale=(0.2, 1.0), interpolation=3),  # 3 is bicubic
-            v2.RandomHorizontalFlip(),
-            v2.ToImage(),
-            v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+    if args.dataset == 'cub':
+        transform_train = v2.Compose([
+                v2.RandomResizedCrop((224, 224), scale=(0.2, 1.0), interpolation=3),  # 3 is bicubic
+                v2.RandomHorizontalFlip(),
+                v2.ToImage(),
+                v2.ToDtype(torch.float32, scale=True),
+                v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+    else:
+        transform_train = None
     
     if args.dataset_task == 'classification':
         # transform_val doesn't matter at the moment because we don't use it.
@@ -200,11 +219,16 @@ if __name__ == '__main__':
 
     if args.projection:
         W = torch.nn.Linear(train_dataset[0][0].flatten().shape[0], args.k, bias=False, device=device)
-        W.load_state_dict(torch.load(args.w_weights, weights_only=True))
+        if not args.train_projection:
+            W.load_state_dict(torch.load(args.w_weights, weights_only=True))
         I = torch.eye(args.k, device=device)
 
 
     param_groups = add_weight_decay(model, args.weight_decay)
+    if args.train_projection:
+        param_groups.append(
+            {'params': W.parameters(), 'weight_decay': 0.} #TODO: consider weight decay in the future.
+        )
 
     eff_batch_size = args.batch_size * args.accum_iter
     if args.lr is None:  # only base_lr is specified
@@ -228,6 +252,7 @@ if __name__ == '__main__':
                 "batch_size": args.batch_size,
                 "architecture": args.model,
                 "dataset": args.dataset,
+                "data_aug": args.data_aug,
                 "epochs": args.epochs,
                 "K": args.k,
                 "projection": args.projection,
@@ -238,7 +263,7 @@ if __name__ == '__main__':
         )
     print(args)
 
-    best_loss = 99999
+    best_loss = 999999
     best_epoch = 0
     for epoch in range(args.epochs):
         print('-' * 10)
@@ -248,19 +273,12 @@ if __name__ == '__main__':
         else:
             train_stats = train_one_epoch(model, None, train_loader, optimizer, device, epoch, loss_scaler, args=args)
 
-        # return {'running_loss': running_loss,
-        #     'lr': lr,
-        #     'original_image': to_image(x[0]),
-        #     'masked': to_image(im_masked[0]),
-        #     'reconstruction': to_image(y[0]),
-        #     'reconstruction_plus_visible': to_image(im_paste[0]),
-        #     }
-
-        unprojected_image = train_stats.pop('unprojected_image', None),
+        unprojected_image = train_stats.pop('unprojected_image', None)
         original_image = train_stats.pop('original_image', None)
         masked = train_stats.pop('masked', None)
         reconstruction = train_stats.pop('reconstruction', None)
         reconstruction_plus_visible = train_stats.pop('reconstruction_plus_visible', None)
+        
 
         if not args.no_log:
             log = {'epoch': epoch,}
@@ -276,27 +294,30 @@ if __name__ == '__main__':
 
             if args.projection:
                 log["W@W.T"] = (W.weight @ W.weight.T - I).square().sum()
-            print('log',log)
+
             wandb.log(log)
         
 
-        if train_stats['running_loss'] < best_loss:
+        # if train_stats['running_loss'] < best_loss:
+        if (epoch+1) % 500 == 0:
             best_loss = train_stats['running_loss']
             best_epoch = epoch
             os.makedirs(args.output, exist_ok=True)
-            save_model(args, epoch, model=model, model_without_ddp=model, optimizer=optimizer, loss_scaler=loss_scaler)
-
             output_dir = Path(args.output)
-            epoch_name = str(epoch)
-            # checkpoint_path = output_dir / (f'{args.experiment}-{args.dataset}-{args.k}-checkpoint-{epoch_name}.pth')
-            checkpoint_path = output_dir / (f'{args.experiment}-{args.dataset}-{args.k}-checkpoint.pth')
-            # Append the saved checkpoint to the list
-            saved_checkpoints.append(checkpoint_path)
-            if len(saved_checkpoints) > 1:
-                oldest_checkpoint = saved_checkpoints.pop(0)
-                if os.path.exists(oldest_checkpoint):
-                    os.remove(oldest_checkpoint)
-        print(train_stats)
+
+            checkpoint_path = output_dir / (f'{args.experiment}-{args.dataset}-{args.trial}-{args.dataset_task}-pretrain-checkpoint{epoch}.pth')
+            to_save = {
+                'model': model.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'epoch': epoch,
+                'scaler': loss_scaler.state_dict(),
+                'args': args,
+            }
+            if args.projection:
+                to_save.update({'W': W.state_dict()})
+            torch.save(to_save, checkpoint_path)
+
+        print('train_stats',train_stats)
 
     print(f'Best loss: {best_loss:4f} at epoch {best_epoch}')
 

@@ -6,6 +6,7 @@ opencv-python
 torch
 torchvision
 wandb
+timm
 # segmentation dependencies
 pip install pycocotools
 pip install segmentation-models-pytorch

@@ -50,11 +50,11 @@ def get_model(args):
 
     return model
 
-def train_one_epoch(model, W, optimizer, criterion, data_loader, device):
+def train_one_epoch(model, W, optimizer, criterion, dataloader, device):
     model.train()
     
     running_loss = 0.0
-    for images, target_masks in data_loader:
+    for batch_idx, (images, target_masks) in enumerate(dataloader):
         images = images.to(device)
         target_masks = target_masks.to(device)
 
@@ -71,11 +71,13 @@ def train_one_epoch(model, W, optimizer, criterion, data_loader, device):
         if args.projection:
             loss = loss + (W.weight @ W.weight.T - I).square().sum()
             # loss = loss + (W.weight @ W.weight.T - I).abs().sum()
-
-        running_loss += loss
-        optimizer.zero_grad()
+        loss = loss / args.accum_iter
+        running_loss += loss.item()
         loss.backward()
-        optimizer.step()
+        # weights update
+        if ((batch_idx + 1) % args.accum_iter == 0) or (batch_idx + 1 == len(dataloader)):
+            optimizer.step()
+            optimizer.zero_grad()
     return {'loss': running_loss}
 
 @torch.inference_mode()
@@ -138,6 +140,8 @@ def parse_args():
     parser.add_argument('--momentum', type=float, default=0.9, help="Momentum for SGD")
     parser.add_argument('--weight_decay', type=float, default=0.0005, help="SGD with weight decay")
     parser.add_argument('--batch_size', type=int, default=32, help="Batch size for training.")
+    parser.add_argument('--accum_iter', default=8, type=int,
+                        help='Accumulate gradient iterations (for increasing the effective batch size under memory constraints)')
     parser.add_argument('--num_workers', type=int, default=4, help="Number of workers for the dataloader.")
     parser.add_argument('--epochs', type=int, default=200, help="Number of training epochs")
     parser.add_argument('--output', type=str, default='./model_weights', help="Output path of model checkpoints")
@@ -182,6 +186,7 @@ if __name__ == '__main__':
             config={
                 "learning_rate": args.lr,
                 "batch_size": args.batch_size,
+                "accum_iter": args.accum_iter,
                 "architecture": args.model,
                 "dataset": args.dataset,
                 "epochs": args.epochs,
@@ -192,6 +197,7 @@ if __name__ == '__main__':
             },
             settings=wandb.Settings(_disable_stats=True, _disable_meta=True)
         )
+        print(args)
 
     best_acc = 0.0
     best_epoch = 0
@@ -213,7 +219,7 @@ if __name__ == '__main__':
                 log.update({f'val/{k}': v})
 
             if args.projection:
-                log["W@W.T"] = (W.weight @ W.weight.T - I).square().sum()
+                log["W@W.T"] = (W.weight @ W.weight.T - I).square().sum().item()
             wandb.log(log)
 
         # deep copy the model

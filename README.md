@@ -73,6 +73,25 @@ python linprobe_mae.py --dataset_task classification \
         --no_log
 ```
 
+You can run MAE finetune code with the following lines:
+Interestingly, the original implementation uses mixup and cutmix, which are pretty strong data augmentations.
+Isn't that kind of biasing the comparison? Either way, I'm not implementing it in either comparison.
+```
+python finetune_mae.py --dataset_task classification \
+        --data_dir ./data/CUB_200_2011 \
+        --dataset cub \
+        --epochs 90 \
+        --model vit_base_patch16 \
+        --cls_token \
+        --k 1024 \
+        --projection \
+        --w_weights ./model_weights/ablate-k-cub-10_best_segmentation_projection.pth \
+        --finetune /home/msmu/repos/test/model_weights/checkpoint-393.pth \
+        --blr 0.1 \
+        --weight_decay 0.0 \
+        --no_log
+```
+
 
 ## MAE-specific setup
 ```
