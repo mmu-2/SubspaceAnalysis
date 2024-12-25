@@ -263,23 +263,12 @@ if __name__ == '__main__':
     load_model(args=args, model_without_ddp=model, optimizer=optimizer, loss_scaler=loss_scaler)
 
     saved_checkpoints = []
-    
+
     if not args.no_log:
         wandb.init(
             project="mae_finetune",
             name=f'{args.experiment}-{args.dataset}-{args.dataset_task}-{args.trial}',
-            config={
-                "learning_rate": args.lr,
-                "batch_size": args.batch_size,
-                "architecture": args.model,
-                "dataset": args.dataset,
-                "data_aug": args.data_aug,
-                "epochs": args.epochs,
-                "K": args.k,
-                "projection": args.projection,
-                "experiment": args.experiment,
-                "trial": args.trial,
-            },
+            config=vars(args),
             settings=wandb.Settings(_disable_stats=True, _disable_meta=True)
         )
     print(args)

@@ -135,7 +135,7 @@ def train_one_epoch(model, W, dataloader, optimizer, device, epoch, loss_scaler,
     return {'running_loss': running_loss,
             'lr': lr,
             'unprojected_image': to_image(unprojected_image[0]),
-            'original_image': to_image(x[0]),
+            'image': to_image(x[0]),
             'masked': to_image(im_masked[0]),
             'reconstruction': to_image(y[0]),
             'reconstruction_plus_visible': to_image(im_paste[0]),
@@ -247,21 +247,10 @@ if __name__ == '__main__':
         wandb.init(
             project="mae_pretrain",
             name=f'{args.experiment}-{args.dataset}-{args.trial}',
-            config={
-                "learning_rate": args.lr,
-                "batch_size": args.batch_size,
-                "architecture": args.model,
-                "dataset": args.dataset,
-                "data_aug": args.data_aug,
-                "epochs": args.epochs,
-                "K": args.k,
-                "projection": args.projection,
-                "experiment": args.experiment,
-                "trial": args.trial,
-            },
+            config=vars(args),
             settings=wandb.Settings(_disable_stats=True, _disable_meta=True)
         )
-    print(args)
+        print(args)
 
     best_loss = 999999
     best_epoch = 0
@@ -298,14 +287,15 @@ if __name__ == '__main__':
             wandb.log(log)
         
 
-        # if train_stats['running_loss'] < best_loss:
-        if (epoch+1) % 500 == 0:
+        if train_stats['running_loss'] < best_loss:
+        # if (epoch+1) % 500 == 0:
             best_loss = train_stats['running_loss']
             best_epoch = epoch
             os.makedirs(args.output, exist_ok=True)
             output_dir = Path(args.output)
 
-            checkpoint_path = output_dir / (f'{args.experiment}-{args.dataset}-{args.trial}-{args.dataset_task}-pretrain-checkpoint{epoch}.pth')
+            # checkpoint_path = output_dir / (f'{args.experiment}-{args.dataset}-{args.trial}-{args.dataset_task}-pretrain-checkpoint{epoch}.pth')
+            checkpoint_path = output_dir / (f'{args.experiment}-{args.dataset}-{args.k}-{args.dataset_task}-pretrain-checkpoint.pth')
             to_save = {
                 'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),

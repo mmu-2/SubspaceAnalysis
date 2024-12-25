@@ -8,6 +8,8 @@ import os
 import torch.nn as nn
 import wandb
 import numpy as np
+import timm
+from mae.models_vit import vit_tiny_patch2, vit_base_patch2, vit_micro_patch2
 
 from cubs_dataset import CUB, CUBClassificationDataset
 
@@ -18,11 +20,9 @@ def train_one_epoch(args, model, W, criterion, dataloader, optimizer, device):
     model.train()
     running_loss = 0.0
     running_corrects = 0
-    for inputs, labels in dataloader:
+    for batch_idx, (inputs, labels) in enumerate(dataloader):
         inputs = inputs.to(device)
         labels = labels.to(device)
-
-        optimizer.zero_grad()
 
         with torch.set_grad_enabled(True):
                     
@@ -43,11 +43,16 @@ def train_one_epoch(args, model, W, criterion, dataloader, optimizer, device):
             running_corrects += torch.sum(preds == labels.data)
 
             if args.projection:
-                loss = loss + (W.weight @ W.weight.T - I).square().sum()
+                loss = loss + args.projection_weight * (W.weight @ W.weight.T - I).square().sum()
                 # loss = loss + (W.weight @ W.weight.T - I).abs().sum()
 
+            loss = loss / args.accum_iter
             loss.backward()
-            optimizer.step()
+
+            # weights update
+            if ((batch_idx + 1) % args.accum_iter == 0) or (batch_idx + 1 == len(dataloader)):
+                optimizer.step()
+                optimizer.zero_grad()
     epoch_loss = running_loss / len(dataloader.dataset)
     epoch_acc = running_corrects.double().item() / len(dataloader.dataset)
 
@@ -89,14 +94,22 @@ def parse_args():
     parser.add_argument('--data_dir', type=str, default=None, help='Directory where the dataset is located.')
     parser.add_argument('--certainty_threshold', type=int, default=4, help='Threshold for certainty levels in CUBS dataset.')
     parser.add_argument('--lr', type=float, default=0.001, help="Learning rate")
+    parser.add_argument('--projection_lr', type=float, default=None, help="Learning rate for projection layer only.")
     parser.add_argument('--batch_size', type=int, default=32, help="Batch size for training.")
+    parser.add_argument('--accum_iter', default=8, type=int,
+                        help='Accumulate gradient iterations (for increasing the effective batch size under memory constraints)')
+    parser.add_argument('--data_aug', action='store_true', help="Flag that turns on data augmentations.")
     parser.add_argument('--num_workers', type=int, default=4, help="Number of workers for the dataloader.")
     parser.add_argument('--epochs', type=int, default=200, help="Number of training epochs")
     parser.add_argument('--output', type=str, default='./model_weights', help="Output path of model checkpoints")
     parser.add_argument('--k', type=int, help="Dimension of latent space from projection")
     parser.add_argument('--dataset', type=str, choices=['fmnist', 'cub', 'cifar10', 'celeba', 'caltech101'], required=True, help="Dataset being evaluated on.")
-    parser.add_argument('--model', type=str, choices=['rn18', 'rn34', 'rn50', 'rn101'], default='rn18', help="Backbone model being evaluated on.")
+    parser.add_argument('--model', type=str, 
+                        choices=['rn18', 'rn34', 'rn50', 'rn101', 
+                                 'vit2-mu', 'vit2-t','vit16-t', 'vit16-s', 'vit2-b', 'vit16-b', 'vit16-l', 'vit14-h'],
+                        default='rn18', help="Backbone model being evaluated on.")
     parser.add_argument('--projection', action='store_true', help="Flag that turns on projection bottleneck W")
+    parser.add_argument('--projection_weight', type=float, default=1.0, help="Loss weight of the regularization term.")
     parser.add_argument('--experiment', type=str, default='default', help="Experiment name, use for grouping in wandb")
     parser.add_argument('--trial', type=int, default=1, help="Trial number. Useful for slurm purposes.")
     parser.add_argument('--no_log', action='store_true', help="Flag that turns off wandb. Useful during debugging.")
@@ -153,13 +166,32 @@ def get_dataset(args, transform_train = None, transform_val = None):
     # https://github.com/Armour/pytorch-nn-practice/blob/master/utils/meanstd.py
     elif args.dataset == 'cifar10':
         if not transform_train and not transform_val:
-            transform_train = v2.Compose([
+            transform_val = v2.Compose([
                 v2.ToImage(),
                 v2.ToDtype(torch.float32, scale=True),
                 v2.Normalize([0.49139968, 0.48215841, 0.44653091],
                             [0.24703223, 0.24348513, 0.26158784]),
             ])
-            transform_val = transform_train
+
+            if args.data_aug:
+                transform_train = v2.Compose([
+                    v2.ToImage(),
+                    v2.RandomHorizontalFlip(.5),
+                    v2.ColorJitter(.2, .2, .2),
+                    v2.RandomAutocontrast(.5),
+                    v2.RandomCrop(32, 4),
+                    v2.ToDtype(torch.float32, scale=True),
+                    v2.Normalize([0.49139968, 0.48215841, 0.44653091],
+                                [0.24703223, 0.24348513, 0.26158784]),
+                ])
+            else:
+                transform_train = v2.Compose([
+                    v2.ToImage(),
+                    v2.ToDtype(torch.float32, scale=True),
+                    v2.Normalize([0.49139968, 0.48215841, 0.44653091],
+                                [0.24703223, 0.24348513, 0.26158784]),
+                ])
+
         train_dataset = datasets.CIFAR10(
             root=args.data_dir,
             train=True,
@@ -234,33 +266,58 @@ def get_model(args):
     The model will not be moved to cuda.
     """
 
-    if args.model == 'rn18':
-        model = models.resnet18(weights=None)
-    elif args.model == 'rn34':
-        model = models.resnet34(weights=None)
-    elif args.model == 'rn50':
-        model = models.resnet50(weights=None)
-    elif args.model =='rn101':
-        model = models.resnet101(weights=None)
-    else:
-        raise ValueError()
-
 
     if args.dataset == 'cub':
+        img_size = 224
         num_classes = 200
     elif args.dataset == 'fmnist':
+        img_size = 28
         num_classes = 10
         model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False) #switch to single channel
     elif args.dataset == 'cifar10':
+        img_size = 32
         num_classes = 10
     elif args.dataset == 'celeba':
+        img_size = 224
         num_classes = 10177
     elif args.dataset == 'caltech101':
+        img_size = 224
         num_classes = 101
     else:
         raise ValueError()
     
-    model.fc = nn.Linear(in_features=model.fc.in_features, out_features=num_classes, bias=True)
+
+    if args.model == 'rn18':
+        model = models.resnet18(weights=None)
+        model.fc = nn.Linear(in_features=model.fc.in_features, out_features=num_classes, bias=True)
+    elif args.model == 'rn34':
+        model = models.resnet34(weights=None)
+        model.fc = nn.Linear(in_features=model.fc.in_features, out_features=num_classes, bias=True)
+    elif args.model == 'rn50':
+        model = models.resnet50(weights=None)
+        model.fc = nn.Linear(in_features=model.fc.in_features, out_features=num_classes, bias=True)
+    elif args.model =='rn101':
+        model = models.resnet101(weights=None)
+        model.fc = nn.Linear(in_features=model.fc.in_features, out_features=num_classes, bias=True)
+    elif args.model =='vit2-mu':
+        model = vit_micro_patch2(num_classes = num_classes, global_pool = False, img_size=img_size)
+    elif args.model == 'vit16-t':
+        model = timm.create_model('vit_tiny_patch16_224', img_size=img_size, num_classes=num_classes)
+    elif args.model == 'vit2-t':
+        model = vit_tiny_patch2(num_classes = num_classes, global_pool = False, img_size=img_size)
+    elif args.model == 'vit16-s':
+        model = timm.create_model('vit_small_patch16_224', img_size=img_size, num_classes=num_classes)
+    elif args.model == 'vit2-b':
+        model = vit_base_patch2(num_classes = num_classes, global_pool = False, img_size=img_size)
+    elif args.model == 'vit16-b':
+        model = timm.create_model('vit_base_patch16_224', img_size=img_size, num_classes=num_classes)
+    elif args.model == 'vit16-l':
+        model = timm.create_model('vit_large_patch16_224', img_size=img_size, num_classes=num_classes)
+    elif args.model == 'vit14-h':
+        model = timm.create_model('vit_huge_patch14_224', img_size=img_size, num_classes=num_classes)
+    else:
+        raise ValueError()
+
     return model
 
 if __name__ == '__main__':
@@ -284,8 +341,9 @@ if __name__ == '__main__':
 
     optimizer_parameters = [{'params': model.parameters(), 'lr': args.lr}]
     if args.projection:
+        lr = args.projection_lr if args.projection_lr else args.lr
         optimizer_parameters.append(
-            {'params': W.parameters(), 'lr': args.lr}
+            {'params': W.parameters(), 'lr': lr}
         )
     optimizer = torch.optim.AdamW(optimizer_parameters)
 
@@ -293,19 +351,10 @@ if __name__ == '__main__':
         wandb.init(
             project="image_classification",
             name=f'{args.experiment}-{args.dataset}-{args.trial}',
-            config={
-                "learning_rate": args.lr,
-                "batch_size": args.batch_size,
-                "architecture": args.model,
-                "dataset": args.dataset,
-                "epochs": args.epochs,
-                "K": args.k,
-                "projection": args.projection,
-                "experiment": args.experiment,
-                "trial": args.trial,
-            },
+            config=vars(args),
             settings=wandb.Settings(_disable_stats=True, _disable_meta=True)
         )
+        print(args)
 
     best_acc = 0.0
     best_epoch = 0
@@ -339,7 +388,7 @@ if __name__ == '__main__':
                 log.update({f'val/{k}': v})
 
             if args.projection:
-                log["W@W.T"] = (W.weight @ W.weight.T - I).square().sum()
+                log["W@W.T"] = (W.weight @ W.weight.T - I).square().sum().item()
             print('log',log)
             wandb.log(log)
 
@@ -348,9 +397,9 @@ if __name__ == '__main__':
             best_acc = val_stats['acc']
             best_epoch = epoch
             os.makedirs(args.output, exist_ok=True)
-            torch.save(model.state_dict(), os.path.join(args.output, f'{args.experiment}-{args.dataset}-{args.trial}_best_classification_model.pth'))
+            torch.save(model.state_dict(), os.path.join(args.output, f'{args.experiment}-{args.dataset}-{args.k}_best_classification_model.pth'))
             if args.projection:
-                torch.save(W.state_dict(), os.path.join(args.output, f'{args.experiment}-{args.dataset}-{args.trial}_best_classification_projection.pth'))
+                torch.save(W.state_dict(), os.path.join(args.output, f'{args.experiment}-{args.dataset}-{args.k}_best_classification_projection.pth'))
 
     print(f'Best val Acc: {best_acc:4f} at epoch {best_epoch}')
 
