@@ -15,7 +15,8 @@ from pathlib import Path
 from segmentation_pipeline import get_dataset as get_segmentation_dataset
 from classification_pipeline import get_dataset as get_classification_dataset
 
-from mae.models_mae import mae_vit_tiny_patch16, mae_vit_tiny_patch2, mae_vit_small_patch16, mae_vit_base_patch16, mae_vit_large_patch16, mae_vit_huge_patch14
+from mae.models_mae import mae_vit_mu_patch2, mae_vit_tiny_patch16, mae_vit_tiny_patch2, \
+    mae_vit_small_patch16, mae_vit_base_patch16, mae_vit_large_patch16, mae_vit_huge_patch14
 from mae.utils import add_weight_decay
 from mae.utils import NativeScalerWithGradNormCount as NativeScaler
 from mae.utils import save_model, load_model, adjust_learning_rate, SmoothedValue
@@ -30,25 +31,38 @@ def get_model(args):
     The model will not be moved to cuda.
     """
 
-    if args.dataset == 'cub': img_size = 224
-    elif args.dataset == 'fmnist': img_size = 28
-    elif args.dataset == 'cifar10': img_size = 32
-    elif args.dataset == 'celeba': img_size = 224
-    elif args.dataset == 'caltech101': img_size = 224
-    else: raise ValueError()
+    if args.dataset == 'cub': 
+        img_size = 224
+        in_chans = 3
+    elif args.dataset == 'fmnist': 
+        img_size = 28
+        in_chans = 1
+    elif args.dataset == 'cifar10':
+        img_size = 32
+        in_chans = 3
+    elif args.dataset == 'celeba': 
+        img_size = 224
+        in_chans = 3
+    elif args.dataset == 'caltech101':
+        img_size = 224
+        in_chans = 3
+    else:
+        raise ValueError()
 
-    if args.model == 'mae_vit_tiny_patch16':
-        model = mae_vit_tiny_patch16(norm_pix_loss=args.norm_pix_loss, img_size=img_size)
-    if args.model == 'mae_vit_tiny_patch2':
-        model = mae_vit_tiny_patch2(norm_pix_loss=args.norm_pix_loss, img_size=img_size)
+    if args.model == 'mae_vit_mu_patch2':
+        model = mae_vit_mu_patch2(norm_pix_loss=args.norm_pix_loss, img_size=img_size, in_chans=in_chans)
+    elif args.model == 'mae_vit_tiny_patch16':
+        model = mae_vit_tiny_patch16(norm_pix_loss=args.norm_pix_loss, img_size=img_size, in_chans=in_chans)
+    elif args.model == 'mae_vit_tiny_patch2':
+        model = mae_vit_tiny_patch2(norm_pix_loss=args.norm_pix_loss, img_size=img_size, in_chans=in_chans)
     elif args.model == 'mae_vit_small_patch16':
-        model = mae_vit_small_patch16(norm_pix_loss=args.norm_pix_loss, img_size=img_size)
+        model = mae_vit_small_patch16(norm_pix_loss=args.norm_pix_loss, img_size=img_size, in_chans=in_chans)
     elif args.model == 'mae_vit_base_patch16':
-        model = mae_vit_base_patch16(norm_pix_loss=args.norm_pix_loss, img_size=img_size)
+        model = mae_vit_base_patch16(norm_pix_loss=args.norm_pix_loss, img_size=img_size, in_chans=in_chans)
     elif args.model == 'mae_vit_large_patch16':
-        model = mae_vit_large_patch16(norm_pix_loss=args.norm_pix_loss, img_size=img_size)
+        model = mae_vit_large_patch16(norm_pix_loss=args.norm_pix_loss, img_size=img_size, in_chans=in_chans)
     elif args.model == 'mae_vit_huge_patch14':
-        model = mae_vit_huge_patch14(norm_pix_loss=args.norm_pix_loss, img_size=img_size)
+        model = mae_vit_huge_patch14(norm_pix_loss=args.norm_pix_loss, img_size=img_size, in_chans=in_chans)
     else:
         raise ValueError()
     
@@ -105,7 +119,7 @@ def train_one_epoch(model, W, dataloader, optimizer, device, epoch, loss_scaler,
         y = torch.einsum('nchw->nhwc', y).detach().cpu()
         # visualize the mask
         mask = mask.detach()
-        mask = mask.unsqueeze(-1).repeat(1, 1, model.patch_embed.patch_size[0]**2 * 3)  # (N, H*W, p*p*3)
+        mask = mask.unsqueeze(-1).repeat(1, 1, model.patch_embed.patch_size[0]**2 * model.in_chans)  # (N, H*W, p*p*C)
         mask = model.unpatchify(mask)  # 1 is removing, 0 is keeping
         mask = torch.einsum('nchw->nhwc', mask).detach().cpu()
         x = torch.einsum('nchw->nhwc', x)
@@ -149,7 +163,7 @@ def parse_args():
 
     # Dataset parameters
     parser.add_argument('--data_dir', type=str, default=None, help='Directory where the dataset is located.')
-    parser.add_argument('--dataset', type=str, choices=['cub', 'celebamask', 'cifar10'], required=True, help="Dataset being evaluated on.")
+    parser.add_argument('--dataset', type=str, choices=['cub', 'fmnist', 'celebamask', 'cifar10', 'caltech101'], required=True, help="Dataset being evaluated on.")
     parser.add_argument('--batch_size', type=int, default=32, help="Batch size for training.")
     parser.add_argument('--num_workers', type=int, default=4, help="Number of workers for the dataloader.")
     parser.add_argument('--epochs', type=int, default=400, help="Number of training epochs")
@@ -172,7 +186,7 @@ def parse_args():
     
     parser.add_argument('--output', type=str, default='./model_weights', help="Output path of model checkpoints")
     parser.add_argument('--model', type=str, 
-                        choices=['mae_vit_tiny_patch16','mae_vit_tiny_patch2',
+                        choices=['mae_vit_mu_patch2','mae_vit_tiny_patch16','mae_vit_tiny_patch2',
                                  'mae_vit_small_patch16','mae_vit_base_patch16', 'mae_vit_large_patch16', 'mae_vit_huge_patch14'],
                         default='mae_vit_base_patch16', 
                         help="Backbone model being evaluated on.")
@@ -263,7 +277,7 @@ if __name__ == '__main__':
             train_stats = train_one_epoch(model, None, train_loader, optimizer, device, epoch, loss_scaler, args=args)
 
         unprojected_image = train_stats.pop('unprojected_image', None)
-        original_image = train_stats.pop('original_image', None)
+        image = train_stats.pop('image', None)
         masked = train_stats.pop('masked', None)
         reconstruction = train_stats.pop('reconstruction', None)
         reconstruction_plus_visible = train_stats.pop('reconstruction_plus_visible', None)
@@ -276,7 +290,7 @@ if __name__ == '__main__':
 
             if epoch % 100 == 0:
                 log.update({"unprojected_image": wandb.Image(unprojected_image)})
-                log.update({"original_image": wandb.Image(original_image)})
+                log.update({"image": wandb.Image(image)})
                 log.update({"masked": wandb.Image(masked)})
                 log.update({"reconstruction": wandb.Image(reconstruction)})
                 log.update({"reconstruction_plus_visible": wandb.Image(reconstruction_plus_visible)})

@@ -14,7 +14,8 @@ from pathlib import Path
 from segmentation_pipeline import get_dataset as get_segmentation_dataset
 from classification_pipeline import get_dataset as get_classification_dataset
 
-from mae.models_vit import vit_tiny_patch16, vit_tiny_patch2, vit_small_patch16, vit_base_patch16, vit_large_patch16, vit_huge_patch14
+from mae.models_vit import vit_micro_patch2, vit_tiny_patch16, vit_tiny_patch2, \
+    vit_small_patch16, vit_base_patch16, vit_large_patch16, vit_huge_patch14
 from mae.utils import add_weight_decay
 from mae.utils import NativeScalerWithGradNormCount as NativeScaler
 from mae.utils import save_model, load_model, adjust_learning_rate, SmoothedValue
@@ -35,37 +36,43 @@ def get_model(args):
     """
 
     if args.dataset == 'cub':
+        img_size = 224
         num_classes = 200
-        img_size = 224
+        in_chans = 3
     elif args.dataset == 'fmnist':
-        num_classes = 10
         img_size = 28
-        model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False) #switch to single channel
-    elif args.dataset == 'cifar10':
         num_classes = 10
+        in_chans = 1
+        # model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False) #switch to single channel
+    elif args.dataset == 'cifar10':
         img_size = 32
+        num_classes = 10
+        in_chans = 3
     elif args.dataset == 'celeba':
+        img_size = 224
         num_classes = 10177
-        img_size = 224
+        in_chans = 3
     elif args.dataset == 'caltech101':
-        num_classes = 101
         img_size = 224
+        num_classes = 101
+        in_chans = 3
     else:
         raise ValueError()
 
-
-    if args.model == 'vit_tiny_patch16':
-        model = vit_tiny_patch16(num_classes = num_classes, global_pool = args.global_pool, img_size=img_size)
-    if args.model == 'vit_tiny_patch2':
-        model = vit_tiny_patch2(num_classes = num_classes, global_pool = args.global_pool, img_size=img_size)
+    if args.model == 'vit_micro_patch2':
+        model = vit_micro_patch2(num_classes = num_classes, global_pool = args.global_pool, img_size=img_size, in_chans=in_chans)
+    elif args.model == 'vit_tiny_patch16':
+        model = vit_tiny_patch16(num_classes = num_classes, global_pool = args.global_pool, img_size=img_size, in_chans=in_chans)
+    elif args.model == 'vit_tiny_patch2':
+        model = vit_tiny_patch2(num_classes = num_classes, global_pool = args.global_pool, img_size=img_size, in_chans=in_chans)
     elif args.model == 'vit_small_patch16':
-        model = vit_small_patch16(num_classes = num_classes, global_pool = args.global_pool, img_size=img_size)
+        model = vit_small_patch16(num_classes = num_classes, global_pool = args.global_pool, img_size=img_size, in_chans=in_chans)
     elif args.model == 'vit_base_patch16':
-        model = vit_base_patch16(num_classes = num_classes, global_pool = args.global_pool, img_size=img_size)
+        model = vit_base_patch16(num_classes = num_classes, global_pool = args.global_pool, img_size=img_size, in_chans=in_chans)
     elif args.model == 'vit_large_patch16':
-        model = vit_large_patch16(num_classes = num_classes, global_pool = args.global_pool, img_size=img_size)
+        model = vit_large_patch16(num_classes = num_classes, global_pool = args.global_pool, img_size=img_size, in_chans=in_chans)
     elif args.model == 'vit_huge_patch14':
-        model = vit_huge_patch14(num_classes = num_classes, global_pool = args.global_pool, img_size=img_size)
+        model = vit_huge_patch14(num_classes = num_classes, global_pool = args.global_pool, img_size=img_size, in_chans=in_chans)
     else:
         raise ValueError()
     
@@ -129,7 +136,7 @@ def parse_args():
 
     # Dataset parameters
     parser.add_argument('--data_dir', type=str, default=None, help='Directory where the dataset is located.')
-    parser.add_argument('--dataset', type=str, choices=['cub', 'celebamask', 'cifar10'], required=True, help="Dataset being evaluated on.")
+    parser.add_argument('--dataset', type=str, choices=['cub', 'fmnist', 'celebamask', 'cifar10', 'caltech101'], required=True, help="Dataset being evaluated on.")
     parser.add_argument('--batch_size', type=int, default=32, help="Batch size for training.")
     parser.add_argument('--num_workers', type=int, default=4, help="Number of workers for the dataloader.")
     parser.add_argument('--epochs', type=int, default=400, help="Number of training epochs")
@@ -154,7 +161,7 @@ def parse_args():
     parser.add_argument('--finetune', type=str, default='', help='finetune from checkpoint')
     parser.add_argument('--output', type=str, default='./model_weights', help="Output path of model checkpoints")
     parser.add_argument('--model', type=str, 
-                        choices=['vit_tiny_patch16','vit_tiny_patch2',
+                        choices=['vit_micro_patch2', 'vit_tiny_patch16','vit_tiny_patch2',
                                  'vit_small_patch16','vit_base_patch16', 'vit_large_patch16', 'vit_huge_patch14'],
                         default='vit_base_patch16', 
                         help="Backbone model being evaluated on.")

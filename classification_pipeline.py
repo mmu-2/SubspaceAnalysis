@@ -270,19 +270,24 @@ def get_model(args):
     if args.dataset == 'cub':
         img_size = 224
         num_classes = 200
+        in_chans = 3
     elif args.dataset == 'fmnist':
         img_size = 28
         num_classes = 10
-        model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False) #switch to single channel
+        in_chans = 1
+        # model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False) #switch to single channel
     elif args.dataset == 'cifar10':
         img_size = 32
         num_classes = 10
+        in_chans = 3
     elif args.dataset == 'celeba':
         img_size = 224
         num_classes = 10177
+        in_chans = 3
     elif args.dataset == 'caltech101':
         img_size = 224
         num_classes = 101
+        in_chans = 3
     else:
         raise ValueError()
     
@@ -290,31 +295,35 @@ def get_model(args):
     if args.model == 'rn18':
         model = models.resnet18(weights=None)
         model.fc = nn.Linear(in_features=model.fc.in_features, out_features=num_classes, bias=True)
+        model.conv1 = nn.Conv2d(in_chans, 64, kernel_size=7, stride=2, padding=3, bias=False)
     elif args.model == 'rn34':
         model = models.resnet34(weights=None)
         model.fc = nn.Linear(in_features=model.fc.in_features, out_features=num_classes, bias=True)
+        model.conv1 = nn.Conv2d(in_chans, 64, kernel_size=7, stride=2, padding=3, bias=False)
     elif args.model == 'rn50':
         model = models.resnet50(weights=None)
         model.fc = nn.Linear(in_features=model.fc.in_features, out_features=num_classes, bias=True)
+        model.conv1 = nn.Conv2d(in_chans, 64, kernel_size=7, stride=2, padding=3, bias=False)
     elif args.model =='rn101':
         model = models.resnet101(weights=None)
         model.fc = nn.Linear(in_features=model.fc.in_features, out_features=num_classes, bias=True)
+        model.conv1 = nn.Conv2d(in_chans, 64, kernel_size=7, stride=2, padding=3, bias=False)
     elif args.model =='vit2-mu':
-        model = vit_micro_patch2(num_classes = num_classes, global_pool = False, img_size=img_size)
+        model = vit_micro_patch2(num_classes = num_classes, global_pool = False, img_size=img_size, in_chans=in_chans)
     elif args.model == 'vit16-t':
-        model = timm.create_model('vit_tiny_patch16_224', img_size=img_size, num_classes=num_classes)
+        model = timm.create_model('vit_tiny_patch16_224', img_size=img_size, num_classes=num_classes, in_chans=in_chans)
     elif args.model == 'vit2-t':
-        model = vit_tiny_patch2(num_classes = num_classes, global_pool = False, img_size=img_size)
+        model = vit_tiny_patch2(num_classes = num_classes, global_pool = False, img_size=img_size, in_chans=in_chans)
     elif args.model == 'vit16-s':
-        model = timm.create_model('vit_small_patch16_224', img_size=img_size, num_classes=num_classes)
+        model = timm.create_model('vit_small_patch16_224', img_size=img_size, num_classes=num_classes, in_chans=in_chans)
     elif args.model == 'vit2-b':
-        model = vit_base_patch2(num_classes = num_classes, global_pool = False, img_size=img_size)
+        model = vit_base_patch2(num_classes = num_classes, global_pool = False, img_size=img_size, in_chans=in_chans)
     elif args.model == 'vit16-b':
-        model = timm.create_model('vit_base_patch16_224', img_size=img_size, num_classes=num_classes)
+        model = timm.create_model('vit_base_patch16_224', img_size=img_size, num_classes=num_classes, in_chans=in_chans)
     elif args.model == 'vit16-l':
-        model = timm.create_model('vit_large_patch16_224', img_size=img_size, num_classes=num_classes)
+        model = timm.create_model('vit_large_patch16_224', img_size=img_size, num_classes=num_classes, in_chans=in_chans)
     elif args.model == 'vit14-h':
-        model = timm.create_model('vit_huge_patch14_224', img_size=img_size, num_classes=num_classes)
+        model = timm.create_model('vit_huge_patch14_224', img_size=img_size, num_classes=num_classes, in_chans=in_chans)
     else:
         raise ValueError()
 
@@ -408,7 +417,7 @@ if __name__ == '__main__':
         # load_path = os.path.join(args.output, f'{args.experiment}-{args.dataset}-{args.trial}_best_classification_model.pth')
         # model.load_state_dict(torch.load(load_path))
         # model.eval()
-        load_path = os.path.join(args.output, f'{args.experiment}-{args.dataset}-{args.trial}_best_classification_projection.pth')
+        load_path = os.path.join(args.output, f'{args.experiment}-{args.dataset}-{args.k}_best_classification_projection.pth')
         W.load_state_dict(torch.load(load_path))
         W.eval()
         for i in range(2):
